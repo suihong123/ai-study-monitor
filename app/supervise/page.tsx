@@ -153,8 +153,10 @@ export default function SupervisePage() {
   }, []);
 
   const analyze = useCallback(async () => {
+    if (!current) return;
     const image = captureImage();
     if (!image || analyzingRef.current) return;
+    const activeSupervision = current;
 
     analyzingRef.current = true;
     setAnalyzing(true);
@@ -164,9 +166,9 @@ export default function SupervisePage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           image,
-          accessCodeId: current?.accessCode.id,
-          sessionId: current?.session.id,
-          sessionToken: current?.session.session_token
+          accessCodeId: activeSupervision.accessCode.id,
+          sessionId: activeSupervision.session.id,
+          sessionToken: activeSupervision.session.session_token
         })
       });
       const result = await response.json();
@@ -203,10 +205,11 @@ export default function SupervisePage() {
       analyzingRef.current = false;
       setAnalyzing(false);
     }
-  }, [captureImage, current?.accessCode.id, current?.session.id, current?.session.session_token, currentIntervalSeconds, maybeRemind, updateDynamicInterval]);
+  }, [captureImage, current, currentIntervalSeconds, maybeRemind, updateDynamicInterval]);
 
   const finish = useCallback(async () => {
     if (!current || finishingRef.current) return;
+    const activeSupervision = current;
     finishingRef.current = true;
     const endTime = new Date().toISOString();
     const finalRecords = recordsRef.current;
@@ -221,14 +224,14 @@ export default function SupervisePage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          sessionId: current.session.id,
-          accessCodeId: current.accessCode.id,
+          sessionId: activeSupervision.session.id,
+          accessCodeId: activeSupervision.accessCode.id,
           records: finalRecords,
           startTime: startedAtRef.current.toISOString(),
           endTime,
           stats: finalStats,
-          reportLevel: current.accessCode.report_level,
-          sessionToken: current.session.session_token
+          reportLevel: activeSupervision.accessCode.report_level,
+          sessionToken: activeSupervision.session.session_token
         })
       });
       const report = await reportResponse.json();
@@ -242,7 +245,7 @@ export default function SupervisePage() {
           parentAdvice: report.parentAdvice ?? "建议继续观察孩子的学习节奏。",
           trend: report.trend ?? null,
           records: finalRecords,
-          reportLevel: current.accessCode.report_level
+          reportLevel: activeSupervision.accessCode.report_level
         })
       );
 
@@ -251,14 +254,14 @@ export default function SupervisePage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "finish-session",
-          sessionId: current.session.id,
-          accessCodeId: current.accessCode.id,
+          sessionId: activeSupervision.session.id,
+          accessCodeId: activeSupervision.accessCode.id,
           records: finalRecords,
           endTime,
           durationMinutes,
           aiCallCount: aiCallCountRef.current,
-          reportLevel: current.accessCode.report_level,
-          sessionToken: current.session.session_token
+          reportLevel: activeSupervision.accessCode.report_level,
+          sessionToken: activeSupervision.session.session_token
         })
       });
     } finally {
@@ -285,7 +288,9 @@ export default function SupervisePage() {
   }, [current]);
 
   useEffect(() => {
+    if (!current) return;
     let cancelled = false;
+    const activeSupervision = current;
 
     async function startCamera() {
       try {
@@ -310,9 +315,9 @@ export default function SupervisePage() {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            accessCodeId: current.accessCode.id,
-            sessionId: current.session.id,
-            sessionToken: current.session.session_token,
+            accessCodeId: activeSupervision.accessCode.id,
+            sessionId: activeSupervision.session.id,
+            sessionToken: activeSupervision.session.session_token,
             errorType: "摄像头权限失败",
             errorMessage: "无法打开摄像头，请确认浏览器权限和HTTPS访问。"
           })
@@ -320,7 +325,7 @@ export default function SupervisePage() {
       }
     }
 
-    if (current) void startCamera();
+    void startCamera();
     return () => {
       cancelled = true;
       streamRef.current?.getTracks().forEach((track) => track.stop());

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { canUseAccessCode, statusMessages } from "@/lib/access-code-status";
 import { getTodayKey } from "@/lib/plans";
 import { supabaseAdmin } from "@/lib/supabase/server";
-import type { AccessCode, StudySession } from "@/types";
+import type { AccessCode, AccessCodeStatus, StudySession } from "@/types";
 
 type LimitKey = "analyze" | "report" | "verify";
 type SessionContext = {
@@ -246,7 +246,7 @@ export async function validateSessionRequest(
   const totalRemaining = accessCode.total_minutes - accessCode.used_minutes;
   const todayRemaining = accessCode.daily_minutes - usedToday;
 
-  const status = accessCode.status;
+  const status = accessCode.status as AccessCodeStatus;
   const expiredByDate =
     accessCode.expires_at && new Date(accessCode.expires_at).getTime() < Date.now();
   if (!canUseAccessCode(status) || expiredByDate || totalRemaining <= 0 || todayRemaining <= 0) {
