@@ -20,8 +20,9 @@ function findDeclinePeriod(records: StudyRecord[]) {
 
 function buildBasicConclusion(stats: ReturnType<typeof calculateStats>) {
   if (stats.focusRate >= 80) return "本次学习状态较好，整体专注度较高。";
-  if (stats.focusRate >= 60) return "本次学习状态一般，中途存在一定分心，需要关注容易走神的时间段。";
-  return "本次有效学习时间偏低，建议缩短单次学习时长，采用分段学习。";
+  if (stats.focusRate >= 60) return "本次学习状态一般，中途存在一定分心。";
+  if (stats.focusRate >= 40) return "本次有效学习占比偏低，建议缩短单次学习时间。";
+  return "本次学习过程异常较多，建议家长关注学习环境和任务难度。";
 }
 
 function buildParentAdvice(stats: ReturnType<typeof calculateStats>) {
@@ -31,6 +32,9 @@ function buildParentAdvice(stats: ReturnType<typeof calculateStats>) {
   }
   if (stats.distractedCount >= 3) {
     advice.push("本次分心次数较多，建议采用25分钟学习+5分钟休息模式。");
+  }
+  if (stats.unrelatedCount >= 2) {
+    advice.push("本次无关物品次数较多，建议学习前清理桌面，只保留当前作业相关物品。");
   }
   const unknownRate =
     stats.studyingCount +
@@ -49,7 +53,10 @@ function buildParentAdvice(stats: ReturnType<typeof calculateStats>) {
           stats.unrelatedCount +
           stats.unknownCount);
   if (unknownRate > 0.2) {
-    advice.push("画面识别不稳定，建议调整手机角度，确保能看到孩子上半身、桌面和双手。");
+    advice.push("建议调整手机角度，确保画面能看到孩子上半身、桌面和双手。");
+  }
+  if (stats.focusRate >= 80) {
+    advice.push("建议保持当前学习节奏。");
   }
   if (advice.length === 0) {
     advice.push("建议保持当前学习安排，结束后用简短复盘帮助孩子确认完成情况。");
@@ -96,8 +103,13 @@ export async function POST(request: NextRequest) {
   const records: StudyRecord[] = body.records ?? [];
   const stats = body.stats ?? calculateStats(records);
   const reportLevel = auth.context.accessCode.report_level as ReportLevel;
-  const conclusion = buildBasicConclusion(stats);
-  const parentAdvice = buildParentAdvice(stats);
+  const isMockMode = records.length === 0 || records.some((record) => (record.analyze_mode ?? "mock") === "mock");
+  const conclusion = isMockMode
+    ? "当前为测试数据，本次报告仅用于验证监督流程。正式接入 AI 视觉识别后，将根据真实学习状态生成分析。"
+    : buildBasicConclusion(stats);
+  const parentAdvice = isMockMode
+    ? "当前为测试数据，建议先重点测试摄像头角度、监督流程和报告展示效果。"
+    : buildParentAdvice(stats);
   const trend = buildMockTrend(reportLevel, records);
 
   const summary = [

@@ -26,7 +26,10 @@ export default function ReportPage() {
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-4xl flex-col px-5 py-8">
       <div className="mb-6">
-        <h1 className="text-3xl font-bold">学习报告</h1>
+        <h1 className="text-3xl font-bold">学习监督报告</h1>
+        <div className="mt-4 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm leading-6 text-warn">
+          当前为测试模式，状态识别为模拟结果，本报告仅用于流程测试，不代表真实学习判断。
+        </div>
         <p className="mt-2 text-muted">本次监督已结束。</p>
       </div>
 
