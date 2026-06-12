@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { normalizeRecordState } from "@/lib/stats";
+import { calculateLearningInsights, normalizeRecordState } from "@/lib/stats";
 import { type ReportLevel, type StudyRecord, type StudyStats } from "@/types";
 
 type Trend = Record<string, string> | null;
@@ -22,6 +22,7 @@ export function ReportCard({
   trend: Trend;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const learningInsights = calculateLearningInsights(records, stats.totalMinutes);
   const isMockMode = records.length === 0 || records.some((record) => (record.analyze_mode ?? "mock") === "mock");
   const insufficientData = stats.totalMinutes < 10 || records.length < 5;
   const visibleRecords = expanded ? records : records.slice(0, 20);
@@ -60,6 +61,32 @@ export function ReportCard({
 
   return (
     <section className="w-full space-y-5">
+      <div className="rounded-md border border-line bg-white p-5">
+        <h2 className="text-xl font-semibold">学习表现总览</h2>
+        <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-4">
+          {[
+            ["专注率", records.length >= 5 ? `${learningInsights.focusRate}%` : "数据采集中"],
+            ["学习评价", learningInsights.grade],
+            ["有效学习", `${learningInsights.studyingMinutes}分钟`],
+            ["思考时间", `${learningInsights.thinkingMinutes}分钟`],
+            ["疑似分心", `${learningInsights.distractedCount}次`],
+            ["离座", `${learningInsights.awayCount}次`],
+            ["提醒", `${stats.reminderCount}次`]
+          ].map(([label, value]) => (
+            <div key={label} className="rounded-md bg-panel p-3">
+              <div className="text-sm text-muted">{label}</div>
+              <div className="mt-1 text-xl font-semibold">{value}</div>
+            </div>
+          ))}
+        </div>
+        <div className="mt-4 rounded-md bg-blue-50 p-4">
+          <div className="text-sm font-medium text-ink">AI总结</div>
+          <p className="mt-2 text-sm leading-6 text-muted">
+            {buildInsightSummary(learningInsights)}
+          </p>
+        </div>
+      </div>
+
       <div className="rounded-md border border-line bg-white p-5">
         <div className="flex flex-wrap items-center gap-2">
           <h2 className="text-xl font-semibold">本次总结</h2>
@@ -193,6 +220,28 @@ function buildOneLineSummary(stats: StudyStats) {
   if (stats.focusRate >= 60) return "本次学习基本完成，中途出现一定分心，需要关注节奏。";
   if (stats.focusRate >= 40) return "本次学习专注度偏低，建议缩短单次学习时长。";
   return "本次学习异常较多，建议优先检查学习环境和任务难度。";
+}
+
+function buildInsightSummary(insights: ReturnType<typeof calculateLearningInsights>) {
+  if (insights.accountableCount === 0) {
+    return "本次有效识别数据较少，建议先调整拍摄角度，完成一段稳定监督后再查看学习分析。";
+  }
+  if (insights.focusRate >= 90) {
+    return "本次学习整体专注度较高，仅出现少量短暂波动，能够持续保持学习状态。";
+  }
+  if (insights.awayCount >= 2) {
+    return "本次学习过程中出现多次离座，建议优化学习环境，提前准备好文具、作业材料和水杯。";
+  }
+  if (insights.distractedCount >= 3) {
+    return "本次学习中出现多次疑似分心，建议采用分段学习，并减少桌面干扰物。";
+  }
+  if (insights.focusRate >= 80) {
+    return "本次学习整体表现良好，偶尔出现分心，但大部分时间能够维持学习或思考状态。";
+  }
+  if (insights.focusRate >= 70) {
+    return "本次学习存在一定分心情况，建议关注容易中断的时间段，帮助孩子保持连续专注。";
+  }
+  return "本次离座或疑似分心较多，建议缩短单次学习时长，并减少外部干扰。";
 }
 
 function buildKeyEvents(records: StudyRecord[], stats: StudyStats, insufficientData: boolean) {

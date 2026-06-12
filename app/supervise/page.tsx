@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { CameraPreview } from "@/components/CameraPreview";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Timer } from "@/components/Timer";
-import { calculateStats } from "@/lib/stats";
+import { calculateLearningInsights, calculateStats } from "@/lib/stats";
 import {
   intensityLabels,
   type AccessCode,
@@ -108,6 +108,10 @@ export default function SupervisePage() {
   );
 
   const stats = useMemo(() => calculateStats(records), [records]);
+  const learningInsights = useMemo(
+    () => calculateLearningInsights(records, Math.max(1, elapsedMinutes)),
+    [elapsedMinutes, records]
+  );
   const latestRecord = records[records.length - 1];
   const shouldShowAngleWarning =
     latestRecord?.learning_state === "unknown" ||
@@ -644,7 +648,33 @@ export default function SupervisePage() {
           <Timer label="总剩余监督时长" minutes={totalRemainingMinutes} />
           <div className="rounded-md border border-line bg-white p-4">
             <div className="text-sm text-muted">当前专注率</div>
-            <div className="mt-1 text-2xl font-semibold">{stats.focusRate}%</div>
+            <div className="mt-1 text-2xl font-semibold">
+              {learningInsights.accountableCount > 0 ? `${learningInsights.focusRate}%` : "数据采集中"}
+            </div>
+          </div>
+          <div className="rounded-md border border-line bg-white p-4">
+            <div className="text-sm text-muted">今日学习评价</div>
+            <div className="mt-1 flex items-end gap-2">
+              <span className="text-2xl font-semibold">{learningInsights.grade}</span>
+              <span className="pb-1 text-sm text-muted">{learningInsights.gradeText}</span>
+            </div>
+          </div>
+          <div className="rounded-md border border-line bg-white p-4">
+            <div className="text-sm font-medium">学习时长拆分</div>
+            <div className="mt-3 grid grid-cols-3 gap-2 text-sm">
+              <MetricPill label="有效学习" value={`${learningInsights.studyingMinutes}分钟`} />
+              <MetricPill label="思考时长" value={`${learningInsights.thinkingMinutes}分钟`} />
+              <MetricPill label="异常时长" value={`${learningInsights.abnormalMinutes}分钟`} />
+            </div>
+          </div>
+          <div className="rounded-md border border-line bg-white p-4">
+            <div className="text-sm font-medium">学习状态分布</div>
+            <div className="mt-3 space-y-3">
+              <ProgressRow label="学习中" value={learningInsights.studyingPercent} color="bg-brand" />
+              <ProgressRow label="思考中" value={learningInsights.thinkingPercent} color="bg-blue-500" />
+              <ProgressRow label="疑似分心" value={learningInsights.distractedPercent} color="bg-warn" />
+              <ProgressRow label="离座" value={learningInsights.awayPercent} color="bg-alert" />
+            </div>
           </div>
           <div className="rounded-md border border-line bg-white p-4">
             <div className="text-sm text-muted">最近一次提醒</div>
@@ -754,4 +784,35 @@ function legacyLearningStateFromStatus(status: StudyStatus): LearningState {
   if (status === "studying") return "studying";
   if (status === "distracted" || status === "unrelated") return "suspected_distracted";
   return "unknown";
+}
+
+function MetricPill({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-md bg-panel p-2">
+      <div className="text-xs text-muted">{label}</div>
+      <div className="mt-1 font-semibold">{value}</div>
+    </div>
+  );
+}
+
+function ProgressRow({
+  label,
+  value,
+  color
+}: {
+  label: string;
+  value: number;
+  color: string;
+}) {
+  return (
+    <div>
+      <div className="mb-1 flex items-center justify-between text-xs text-muted">
+        <span>{label}</span>
+        <span>{value}%</span>
+      </div>
+      <div className="h-2 overflow-hidden rounded-full bg-panel">
+        <div className={`h-full rounded-full ${color}`} style={{ width: `${value}%` }} />
+      </div>
+    </div>
+  );
 }

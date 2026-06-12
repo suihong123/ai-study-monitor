@@ -76,6 +76,72 @@ export function normalizeRecordState(record: StudyRecord): {
   return { presence: "present", learningState: "unknown" };
 }
 
+export function calculateLearningInsights(records: StudyRecord[], durationMinutes?: number) {
+  const normalized = records.map(normalizeRecordState);
+  const studyingCount = normalized.filter(
+    (record) => record.presence === "present" && record.learningState === "studying"
+  ).length;
+  const thinkingCount = normalized.filter(
+    (record) => record.presence === "present" && record.learningState === "thinking"
+  ).length;
+  const distractedCount = normalized.filter(
+    (record) => record.presence === "present" && record.learningState === "suspected_distracted"
+  ).length;
+  const awayCount = normalized.filter((record) => record.presence === "away").length;
+  const unknownCount = normalized.filter(
+    (record) => record.presence === "present" && record.learningState === "unknown"
+  ).length;
+  const accountableCount = studyingCount + thinkingCount + distractedCount + awayCount;
+  const focusRate =
+    accountableCount === 0
+      ? 0
+      : Math.round(((studyingCount + thinkingCount) / accountableCount) * 100);
+  const baseMinutes = durationMinutes ?? accountableCount;
+
+  return {
+    studyingCount,
+    thinkingCount,
+    distractedCount,
+    awayCount,
+    unknownCount,
+    accountableCount,
+    focusRate,
+    grade: learningGrade(focusRate),
+    gradeText: learningGradeText(focusRate),
+    studyingPercent: percentage(studyingCount, accountableCount),
+    thinkingPercent: percentage(thinkingCount, accountableCount),
+    distractedPercent: percentage(distractedCount, accountableCount),
+    awayPercent: percentage(awayCount, accountableCount),
+    studyingMinutes: estimatedMinutes(studyingCount, accountableCount, baseMinutes),
+    thinkingMinutes: estimatedMinutes(thinkingCount, accountableCount, baseMinutes),
+    abnormalMinutes: estimatedMinutes(distractedCount + awayCount, accountableCount, baseMinutes)
+  };
+}
+
+function percentage(value: number, total: number) {
+  return total === 0 ? 0 : Math.round((value / total) * 100);
+}
+
+function estimatedMinutes(value: number, total: number, durationMinutes: number) {
+  return total === 0 ? 0 : Math.round((durationMinutes * value) / total);
+}
+
+function learningGrade(focusRate: number) {
+  if (focusRate >= 90) return "A";
+  if (focusRate >= 80) return "B+";
+  if (focusRate >= 70) return "B";
+  if (focusRate >= 60) return "C";
+  return "D";
+}
+
+function learningGradeText(focusRate: number) {
+  if (focusRate >= 90) return "专注表现优秀";
+  if (focusRate >= 80) return "整体表现良好，偶尔出现分心";
+  if (focusRate >= 70) return "存在一定分心情况，建议保持连续专注";
+  if (focusRate >= 60) return "专注度偏低，建议减少干扰";
+  return "离座或分心较多，建议加强学习管理";
+}
+
 export function formatMinutes(minutes: number) {
   return `${Math.max(0, Math.round(minutes))}分钟`;
 }
