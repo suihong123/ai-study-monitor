@@ -11,6 +11,7 @@ import {
   type AccessCode,
   type LearningState,
   type Presence,
+  type ReminderType,
   type StudyRecord,
   type StudySession,
   type StudyStatus,
@@ -31,11 +32,28 @@ type LastAnalyzeImage = {
   sizeKb: string;
 };
 
-const reminders: Partial<Record<StudyStatus, string>> = {
-  distracted: "请继续专注学习",
-  away: "请回到座位继续完成作业",
-  lying: "请保持良好学习姿势"
+type LastReminder = {
+  type: ReminderType;
+  text: string;
+  timestamp: number;
 };
+
+const reminderLabels: Record<ReminderType, string> = {
+  suspected_distracted: "疑似走神提醒",
+  away: "离座提醒"
+};
+
+const firstReminderTexts: Record<ReminderType, string> = {
+  suspected_distracted: "先回到当前题目，继续专注一下。本次分心情况会记录到学习报告里。",
+  away: "请回到座位，继续完成学习任务。本次离座情况会记录到学习报告里。"
+};
+
+const repeatReminderTexts: Record<ReminderType, string> = {
+  suspected_distracted: "已经多次检测到疑似分心，系统会整理到本次学习报告中，请先完成当前任务。",
+  away: "已经多次检测到离座，系统会整理到本次学习报告中，请回到座位继续学习。"
+};
+
+const reminderCooldownMs = 3 * 60 * 1000;
 
 const correctionButtons: Array<{ status: StudyStatus; label: string }> = [
   { status: "studying", label: "我在学习" },
@@ -71,6 +89,8 @@ export default function SupervisePage() {
   const analyzeFailureCountRef = useRef(0);
   const frequencyReasonRef = useRef<FrequencyReason>("normal");
   const initialAnalyzeTimerRef = useRef<number | null>(null);
+  const lastReminderAtRef = useRef<Partial<Record<ReminderType, number>>>({});
+  const reminderCountByTypeRef = useRef<Partial<Record<ReminderType, number>>>({});
   const [current, setCurrent] = useState<CurrentSupervision | null>(null);
   const [status, setStatus] = useState<StudyStatus>("unknown");
   const [presence, setPresence] = useState<Presence>("present");
@@ -85,6 +105,7 @@ export default function SupervisePage() {
   const [lastAnalyzeImage, setLastAnalyzeImage] = useState<LastAnalyzeImage | null>(null);
   const [imagePreviewOpen, setImagePreviewOpen] = useState(false);
   const [pageActive, setPageActive] = useState(true);
+  const [lastReminder, setLastReminder] = useState<LastReminder | null>(null);
 
   const elapsedMinutes = Math.floor(elapsedSeconds / 60);
   const todayRemainingMinutes = Math.max(
@@ -99,8 +120,17 @@ export default function SupervisePage() {
   const stats = useMemo(() => calculateStats(records), [records]);
   const latestRecord = records[records.length - 1];
   const shouldShowAngleWarning =
-    latestRecord?.status === "unknown" &&
-    angleWarningTerms.some((term) => latestRecord.reason?.includes(term));
+    latestRecord?.learning_state === "unknown" ||
+    (latestRecord?.status === "unknown" &&
+      angleWarningTerms.some((term) => latestRecord.reason?.includes(term)));
+  const reminderCooldownRemainingMinutes = lastReminder
+    ? Math.max(
+        0,
+        Math.ceil(
+          (reminderCooldownMs - (Date.now() - lastReminder.timestamp)) / 60_000
+        )
+      )
+    : 0;
 
   const speak = useCallback((text: string) => {
     if (!("speechSynthesis" in window)) return;
@@ -177,30 +207,35 @@ export default function SupervisePage() {
   const maybeRemind = useCallback(
     (nextRecords: StudyRecord[]) => {
       const latest = nextRecords[nextRecords.length - 1];
-      if (!latest) return false;
-      let reminded = false;
+      const previous = nextRecords[nextRecords.length - 2];
+      if (!latest || !previous) return null;
 
-      if (latest.status === "distracted") {
-        const previous = nextRecords[nextRecords.length - 2];
-        if (previous?.status === "distracted") {
-          speak(reminders.distracted!);
-          reminded = true;
-        }
+      const latestReminderType = reminderTypeForRecord(latest);
+      if (!latestReminderType || latestReminderType !== reminderTypeForRecord(previous)) {
+        return null;
       }
 
-      if (latest.status === "away") {
-        speak(reminders.away!);
-        reminded = true;
+      const lastReminderAt = lastReminderAtRef.current[latestReminderType] ?? 0;
+      if (Date.now() - lastReminderAt < reminderCooldownMs) {
+        return null;
       }
-      if (latest.status === "lying") {
-        speak(reminders.lying!);
-        reminded = true;
-      }
-      if (latest.status === "unrelated") {
-        speak(reminders.distracted!);
-        reminded = true;
-      }
-      return reminded;
+
+      const reminderCount = reminderCountByTypeRef.current[latestReminderType] ?? 0;
+      const text =
+        reminderCount === 0
+          ? firstReminderTexts[latestReminderType]
+          : repeatReminderTexts[latestReminderType];
+
+      speak(text);
+      lastReminderAtRef.current[latestReminderType] = Date.now();
+      reminderCountByTypeRef.current[latestReminderType] = reminderCount + 1;
+      const reminder = {
+        type: latestReminderType,
+        text,
+        timestamp: Date.now()
+      };
+      setLastReminder(reminder);
+      return reminder;
     },
     [speak]
   );
@@ -280,13 +315,20 @@ export default function SupervisePage() {
           frequency_lowered_by_focus: currentFrequencyReason === "focused",
           ai_called: true,
           triggered_reminder: false,
+          reminder_type: null,
+          reminder_text: null,
           error_message: null
         }
       ];
-      const reminded = maybeRemind(draftRecords);
+      const reminder = maybeRemind(draftRecords);
       const nextRecords = draftRecords.map((record, index) =>
         index === draftRecords.length - 1
-          ? { ...record, triggered_reminder: reminded }
+          ? {
+              ...record,
+              triggered_reminder: Boolean(reminder),
+              reminder_type: reminder?.type ?? null,
+              reminder_text: reminder?.text ?? null
+            }
           : record
       );
 
@@ -543,6 +585,9 @@ export default function SupervisePage() {
           建议手机放置于孩子侧前方45°位置。确保能够看到：上半身、双手、桌面、作业区域。这样可提高识别准确率。
         </div>
       </div>
+      <div className="mb-4 rounded-md border border-blue-100 bg-blue-50 p-3 text-sm leading-6 text-muted">
+        学习过程会自动生成报告，包括专注时长、疑似分心、离座和提醒记录。
+      </div>
       <div className="mb-4 flex items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold">学习监督中</h1>
@@ -573,7 +618,7 @@ export default function SupervisePage() {
           )}
           {shouldShowAngleWarning && (
             <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm leading-6 text-warn">
-              <div className="font-medium">当前拍摄角度可能不适合学习监督。</div>
+              <div className="font-medium">当前画面无法判断，请调整手机角度。</div>
               <div className="mt-1">建议调整手机位置，让画面同时看到：</div>
               <ul className="mt-1 list-inside list-disc">
                 <li>孩子上半身</li>
@@ -631,6 +676,22 @@ export default function SupervisePage() {
             <div className="mt-1 text-2xl font-semibold">{stats.focusRate}%</div>
           </div>
           <div className="rounded-md border border-line bg-white p-4">
+            <div className="text-sm text-muted">最近一次提醒</div>
+            {lastReminder ? (
+              <div className="mt-2 text-sm leading-6">
+                <div className="font-medium">{reminderLabels[lastReminder.type]}</div>
+                <div className="text-muted">{formatRelativeReminderTime(lastReminder.timestamp)}</div>
+                <div className="text-muted">
+                  {reminderCooldownRemainingMinutes > 0
+                    ? `冷却中：还需等待 ${reminderCooldownRemainingMinutes}分钟`
+                    : "可再次提醒"}
+                </div>
+              </div>
+            ) : (
+              <div className="mt-2 text-sm text-muted">暂无提醒</div>
+            )}
+          </div>
+          <div className="rounded-md border border-line bg-white p-4">
             <div className="text-sm font-medium">最近记录</div>
             <div className="mt-3 space-y-2 text-sm">
               {records.slice(-10).reverse().map((record, index) => (
@@ -653,6 +714,7 @@ export default function SupervisePage() {
                       : "-"}
                     {" / "}
                     {record.triggered_reminder ? "已提醒" : "未提醒"}
+                    {record.reminder_type && ` / ${reminderLabels[record.reminder_type]}`}
                     {" / "}
                     {record.analyze_mode === "qwen" ? "真实AI识别" : "模拟识别"}
                     {record.frequency_boosted_by_abnormal && " / 异常后提频"}
@@ -755,6 +817,20 @@ function intensityFromInterval(intervalSeconds: number): SupervisionIntensity {
   if (intervalSeconds <= 30) return "high";
   if (intervalSeconds <= 60) return "standard";
   return "low";
+}
+
+function reminderTypeForRecord(record: StudyRecord): ReminderType | null {
+  const currentPresence = record.presence ?? legacyPresenceFromStatus(record.status);
+  const currentLearningState = record.learning_state ?? legacyLearningStateFromStatus(record.status);
+  if (currentPresence === "away") return "away";
+  if (currentLearningState === "suspected_distracted") return "suspected_distracted";
+  return null;
+}
+
+function formatRelativeReminderTime(timestamp: number) {
+  const minutes = Math.max(0, Math.floor((Date.now() - timestamp) / 60_000));
+  if (minutes === 0) return "刚刚";
+  return `${minutes}分钟前`;
 }
 
 function displayStateText(record: StudyRecord) {

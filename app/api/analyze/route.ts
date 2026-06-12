@@ -301,6 +301,8 @@ export async function POST(request: NextRequest) {
         current_frequency_seconds: Number(body.currentFrequencySeconds ?? 0) || null,
         frequency_boosted_by_abnormal: Boolean(body.frequencyBoostedByAbnormal),
         frequency_lowered_by_focus: Boolean(body.frequencyLoweredByFocus),
+        reminder_type: null,
+        reminder_text: null,
         ai_called: true
       })
       .select("id")

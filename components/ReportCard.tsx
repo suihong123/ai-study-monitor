@@ -197,12 +197,14 @@ function buildOneLineSummary(stats: StudyStats) {
 
 function buildKeyEvents(records: StudyRecord[], stats: StudyStats, insufficientData: boolean) {
   const events = [
+    `本次疑似分心 ${stats.suspectedDistractedCount ?? stats.distractedCount} 次`,
+    `本次离座 ${stats.awayCount} 次`,
+    `本次触发提醒 ${stats.reminderCount} 次`,
     `本次共出现 ${stats.abnormalCount} 次异常状态`,
     `最集中异常时段：${findAbnormalWindow(records)}`,
     stats.longestFocusMinutes > 0
       ? `最长连续专注时长约 ${stats.longestFocusMinutes} 分钟`
-      : "本次没有检测到连续稳定学习时段",
-    `本次触发提醒 ${stats.reminderCount} 次`
+      : "本次没有检测到连续稳定学习时段"
   ];
 
   if (insufficientData) {

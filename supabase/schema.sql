@@ -95,6 +95,8 @@ create table if not exists records (
   frequency_boosted_by_abnormal boolean default false,
   frequency_lowered_by_focus boolean default false,
   triggered_reminder boolean default false,
+  reminder_type text check (reminder_type in ('suspected_distracted', 'away')),
+  reminder_text text,
   ai_called boolean default true,
   error_message text,
   manual_corrected boolean default false,

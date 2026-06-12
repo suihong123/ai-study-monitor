@@ -14,6 +14,8 @@ export type LearningState =
   | "suspected_distracted"
   | "unknown";
 
+export type ReminderType = "suspected_distracted" | "away";
+
 export type PlanType =
   | "trial"
   | "basic_monthly"
@@ -80,6 +82,8 @@ export type StudyRecord = {
   frequency_boosted_by_abnormal?: boolean;
   frequency_lowered_by_focus?: boolean;
   triggered_reminder?: boolean;
+  reminder_type?: ReminderType | null;
+  reminder_text?: string | null;
   ai_called?: boolean;
   error_message?: string | null;
   manual_corrected?: boolean;
