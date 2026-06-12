@@ -29,6 +29,15 @@ const validStatuses: StudyStatus[] = [
   "unknown"
 ];
 
+const awayCorrectionTerms = [
+  "人物",
+  "上半身",
+  "面部",
+  "坐在",
+  "镜头前",
+  "画面中有人"
+];
+
 const qwenPrompt = `你是一名儿童学习监督助手。
 
 请根据图片判断当前学习状态。
@@ -49,6 +58,26 @@ const qwenPrompt = `你是一名儿童学习监督助手。
 5. 是否在玩手机
 6. 是否在玩与学习无关的物品
 7. 是否趴桌
+
+away 的判定规则必须非常严格：
+
+1. away 只能用于：
+   - 画面中无人
+   - 座位明显空着
+   - 人已经离开学习区域
+2. 只要画面中有人，不能直接判断为 away。
+3. 如果画面中有人，但看不到桌面、双手、书本、作业区域，应返回 unknown。
+4. 如果画面中有人，坐在位置附近，但没有明显学习动作，应返回 distracted 或 unknown，不要返回 away。
+5. 如果人物在画面中，哪怕没有学习动作，也不能判定为离座。
+
+状态含义：
+
+studying：能看到人在学习位置，并且存在看书、写字、阅读、看学习屏幕等学习行为
+distracted：画面中有人，人在座位或学习区域附近，但注意力疑似偏离或没有明显学习动作
+away：画面中无人、座位明显空着，或人已经离开学习区域
+lying：趴桌或明显不适合继续学习的趴伏姿势
+unrelated：画面中有人，但正在玩手机、玩具或明显无关物品
+unknown：画面中有人但证据不足，例如看不到桌面、双手、书本、作业区域，或画面不清晰无法判断
 
 只返回：
 
@@ -183,9 +212,14 @@ async function analyzeWithQwen(image: string) {
   const content = result.choices?.[0]?.message?.content;
   const parsed = typeof content === "string" ? JSON.parse(content) : content;
 
-  const status = validStatuses.includes(parsed.status) ? parsed.status : "unknown";
+  let status = validStatuses.includes(parsed.status) ? parsed.status : "unknown";
   const confidence = Math.min(1, Math.max(0, Number(parsed.confidence ?? 0.5)));
-  const reason = String(parsed.reason ?? "Qwen-VL返回结果。").slice(0, 160);
+  let reason = String(parsed.reason ?? "Qwen-VL返回结果。").slice(0, 160);
+
+  if (status === "away" && awayCorrectionTerms.some((term) => reason.includes(term))) {
+    status = "unknown";
+    reason = `${reason} 系统修正：画面中有人，不能判定为离座。`;
+  }
 
   return {
     status,
