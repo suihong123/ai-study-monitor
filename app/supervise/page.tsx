@@ -25,13 +25,6 @@ type CurrentSupervision = {
   todayRemainingMinutes: number;
 };
 
-type LastAnalyzeImage = {
-  dataUrl: string;
-  width: number;
-  height: number;
-  sizeKb: string;
-};
-
 type LastReminder = {
   type: ReminderType;
   text: string;
@@ -99,11 +92,8 @@ export default function SupervisePage() {
   const [cameraError, setCameraError] = useState("");
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [analyzing, setAnalyzing] = useState(false);
-  const [aiCallCount, setAiCallCount] = useState(0);
   const [currentIntervalSeconds, setCurrentIntervalSeconds] = useState(60);
   const [intensity, setIntensity] = useState<SupervisionIntensity>("standard");
-  const [lastAnalyzeImage, setLastAnalyzeImage] = useState<LastAnalyzeImage | null>(null);
-  const [imagePreviewOpen, setImagePreviewOpen] = useState(false);
   const [pageActive, setPageActive] = useState(true);
   const [lastReminder, setLastReminder] = useState<LastReminder | null>(null);
 
@@ -240,7 +230,7 @@ export default function SupervisePage() {
     [speak]
   );
 
-  const captureImage = useCallback((): LastAnalyzeImage | null => {
+  const captureImage = useCallback(() => {
     const video = videoRef.current;
     if (!video || video.readyState < 2 || video.videoWidth === 0) return null;
 
@@ -250,22 +240,15 @@ export default function SupervisePage() {
     const context = canvas.getContext("2d");
     if (!context) return null;
     context.drawImage(video, 0, 0, canvas.width, canvas.height);
-    const dataUrl = canvas.toDataURL("image/jpeg", 0.6);
-    return {
-      dataUrl,
-      width: canvas.width,
-      height: canvas.height,
-      sizeKb: estimateDataUrlSizeKb(dataUrl)
-    };
+    return canvas.toDataURL("image/jpeg", 0.6);
   }, []);
 
   const analyze = useCallback(async () => {
     if (!current || finishingRef.current || document.hidden || !navigator.onLine) return;
-    const imagePayload = captureImage();
-    if (!imagePayload || analyzingRef.current) return;
+    const image = captureImage();
+    if (!image || analyzingRef.current) return;
     const activeSupervision = current;
     const currentFrequencyReason = frequencyReasonRef.current;
-    setLastAnalyzeImage(imagePayload);
 
     analyzingRef.current = true;
     setAnalyzing(true);
@@ -274,7 +257,7 @@ export default function SupervisePage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          image: imagePayload.dataUrl,
+          image,
           accessCodeId: activeSupervision.accessCode.id,
           sessionId: activeSupervision.session.id,
           sessionToken: activeSupervision.session.session_token,
@@ -338,7 +321,6 @@ export default function SupervisePage() {
       setPresence(nextPresence);
       setLearningState(nextLearningState);
       aiCallCountRef.current += 1;
-      setAiCallCount(aiCallCountRef.current);
       updateDynamicInterval(nextRecords);
     } catch {
       setCameraError("AI识别失败，请检查网络后继续。");
@@ -577,7 +559,7 @@ export default function SupervisePage() {
   return (
     <main className="mx-auto min-h-screen w-full max-w-5xl px-4 py-5">
       <div className="mb-4 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm leading-6 text-warn">
-        当前为测试模式，状态识别为模拟结果，正式版将接入 AI 视觉模型。
+        当前为测试模式，状态识别为模拟结果，正式版将使用智能识别。
       </div>
       <div className="mb-4 rounded-md border border-line bg-white p-3 text-sm leading-6 text-muted">
         <div className="font-medium text-ink">最佳拍摄角度提示</div>
@@ -604,13 +586,6 @@ export default function SupervisePage() {
       <div className="grid gap-4 lg:grid-cols-[1fr_320px]">
         <section>
           <CameraPreview ref={videoRef} />
-          <button
-            type="button"
-            onClick={() => setImagePreviewOpen(true)}
-            className="mt-3 rounded-md border border-line bg-white px-4 py-2 text-sm font-medium"
-          >
-            查看AI识别图片
-          </button>
           {cameraError && (
             <p className="mt-3 rounded-md border border-alert bg-red-50 p-3 text-sm text-alert">
               {cameraError}
@@ -668,10 +643,6 @@ export default function SupervisePage() {
           <Timer label="今日剩余额度" minutes={todayRemainingMinutes} />
           <Timer label="总剩余监督时长" minutes={totalRemainingMinutes} />
           <div className="rounded-md border border-line bg-white p-4">
-            <div className="text-sm text-muted">本次已调用AI次数</div>
-            <div className="mt-1 text-2xl font-semibold">{aiCallCount}次</div>
-          </div>
-          <div className="rounded-md border border-line bg-white p-4">
             <div className="text-sm text-muted">当前专注率</div>
             <div className="mt-1 text-2xl font-semibold">{stats.focusRate}%</div>
           </div>
@@ -708,17 +679,8 @@ export default function SupervisePage() {
                     {record.triggered_reminder ? "，已提醒" : ""}
                   </div>
                   <div className="mt-1 text-xs text-muted">
-                    置信度：
-                    {typeof record.confidence === "number"
-                      ? `${Math.round(record.confidence * 100)}%`
-                      : "-"}
-                    {" / "}
                     {record.triggered_reminder ? "已提醒" : "未提醒"}
                     {record.reminder_type && ` / ${reminderLabels[record.reminder_type]}`}
-                    {" / "}
-                    {record.analyze_mode === "qwen" ? "真实AI识别" : "模拟识别"}
-                    {record.frequency_boosted_by_abnormal && " / 异常后提频"}
-                    {record.frequency_lowered_by_focus && " / 连续专注降频"}
                   </div>
                   {record.reason && (
                     <div className="mt-1 text-xs leading-5 text-muted">
@@ -732,67 +694,8 @@ export default function SupervisePage() {
           </div>
         </aside>
       </div>
-      {imagePreviewOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="max-h-[90vh] w-full max-w-3xl overflow-auto rounded-md bg-white p-5 shadow-lg">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <h2 className="text-xl font-semibold">AI实际识别图片</h2>
-                <p className="mt-2 text-sm leading-6 text-muted">
-                  这是系统实际发送给 AI 模型分析的图片，用于检查拍摄角度和截图裁切是否正确。
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setImagePreviewOpen(false)}
-                className="rounded-md border border-line px-3 py-2 text-sm font-medium"
-              >
-                关闭
-              </button>
-            </div>
-
-            {!lastAnalyzeImage ? (
-              <div className="mt-5 rounded-md bg-panel p-4 text-sm text-muted">
-                暂无AI识别图片，请等待首次识别完成。
-              </div>
-            ) : (
-              <div className="mt-5 space-y-4">
-                <img
-                  src={lastAnalyzeImage.dataUrl}
-                  alt="AI实际识别图片"
-                  className="w-full rounded-md border border-line bg-black object-contain"
-                />
-                <div className="grid gap-3 text-sm sm:grid-cols-2">
-                  <DebugItem label="图片尺寸" value={`${lastAnalyzeImage.width} × ${lastAnalyzeImage.height}`} />
-                  <DebugItem label="图片大小" value={`${lastAnalyzeImage.sizeKb} KB`} />
-                  <DebugItem label="最近一次识别状态" value={latestRecord ? displayStateText(latestRecord) : "-"} />
-                  <DebugItem
-                    label="最近一次 analyze_mode"
-                    value={latestRecord?.analyze_mode === "qwen" ? "真实AI识别" : latestRecord ? "模拟识别" : "-"}
-                  />
-                  <DebugItem
-                    label="最近一次 confidence"
-                    value={
-                      typeof latestRecord?.confidence === "number"
-                        ? `${Math.round(latestRecord.confidence * 100)}%`
-                        : "-"
-                    }
-                  />
-                  <DebugItem label="最近一次识别原因" value={latestRecord?.reason ?? "-"} wide />
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
     </main>
   );
-}
-
-function estimateDataUrlSizeKb(dataUrl: string) {
-  const base64 = dataUrl.split(",")[1] ?? "";
-  const padding = base64.endsWith("==") ? 2 : base64.endsWith("=") ? 1 : 0;
-  return Math.max(1, Math.round((base64.length * 3) / 4 - padding) / 1024).toFixed(1);
 }
 
 function timeDefaultInterval(elapsedMinutes: number) {
@@ -851,21 +754,4 @@ function legacyLearningStateFromStatus(status: StudyStatus): LearningState {
   if (status === "studying") return "studying";
   if (status === "distracted" || status === "unrelated") return "suspected_distracted";
   return "unknown";
-}
-
-function DebugItem({
-  label,
-  value,
-  wide
-}: {
-  label: string;
-  value: string;
-  wide?: boolean;
-}) {
-  return (
-    <div className={`rounded-md bg-panel p-3 ${wide ? "sm:col-span-2" : ""}`}>
-      <div className="text-xs text-muted">{label}</div>
-      <div className="mt-1 break-words font-medium">{value}</div>
-    </div>
-  );
 }
