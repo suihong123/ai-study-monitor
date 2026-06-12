@@ -193,7 +193,7 @@ export default function SupervisePage() {
           timestamp: new Date().toISOString(),
           confidence: result.confidence ?? null,
           reason: result.reason ?? null,
-          analyze_mode: result.analyzeMode ?? "mock",
+          analyze_mode: result.analyze_mode ?? result.analyzeMode ?? "mock",
           current_frequency_seconds: currentIntervalSeconds,
           ai_called: true,
           triggered_reminder: false,
@@ -407,6 +407,12 @@ export default function SupervisePage() {
       <div className="mb-4 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm leading-6 text-warn">
         当前为测试模式，状态识别为模拟结果，正式版将接入 AI 视觉模型。
       </div>
+      <div className="mb-4 rounded-md border border-line bg-white p-3 text-sm leading-6 text-muted">
+        <div className="font-medium text-ink">最佳拍摄角度提示</div>
+        <div className="mt-1">
+          建议手机放置于孩子侧前方45°位置。确保能够看到：上半身、双手、桌面、作业区域。这样可提高识别准确率。
+        </div>
+      </div>
       <div className="mb-4 flex items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold">学习监督中</h1>
@@ -475,13 +481,32 @@ export default function SupervisePage() {
             <div className="text-sm font-medium">最近记录</div>
             <div className="mt-3 space-y-2 text-sm">
               {records.slice(-10).reverse().map((record, index) => (
-                <div key={`${record.timestamp}-${index}`} className="flex justify-between gap-2 rounded-md bg-panel px-3 py-2">
-                  <span>{new Date(record.timestamp).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</span>
-                  <span>
+                <div key={`${record.timestamp}-${index}`} className="rounded-md bg-panel px-3 py-2">
+                  <div className="font-medium">
+                    {new Date(record.timestamp).toLocaleTimeString("zh-CN", {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                      second: "2-digit"
+                    })}
+                  </div>
+                  <div className="mt-1">
                     {record.status === "studying"
                       ? "学习中"
                       : `${record.status === "distracted" ? "疑似走神" : record.status === "away" ? "离座" : record.status === "lying" ? "趴桌" : record.status === "unrelated" ? "无关物品" : "无法判断"}${record.triggered_reminder ? "，已提醒" : ""}`}
-                  </span>
+                  </div>
+                  <div className="mt-1 text-xs text-muted">
+                    置信度：
+                    {typeof record.confidence === "number"
+                      ? `${Math.round(record.confidence * 100)}%`
+                      : "-"}
+                    {" / "}
+                    {record.triggered_reminder ? "已提醒" : "未提醒"}
+                  </div>
+                  {record.reason && (
+                    <div className="mt-1 text-xs leading-5 text-muted">
+                      原因：{record.reason}
+                    </div>
+                  )}
                 </div>
               ))}
               {records.length === 0 && <div className="text-muted">暂无记录</div>}

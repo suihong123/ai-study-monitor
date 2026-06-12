@@ -104,16 +104,23 @@ export async function POST(request: NextRequest) {
   const stats = body.stats ?? calculateStats(records);
   const reportLevel = auth.context.accessCode.report_level as ReportLevel;
   const isMockMode = records.length === 0 || records.some((record) => (record.analyze_mode ?? "mock") === "mock");
-  const conclusion = isMockMode
+  const insufficientData = stats.totalMinutes < 10 || records.length < 5;
+  const conclusion = insufficientData
+    ? "数据量不足，本报告仅供测试。当前不生成专注率结论和学习诊断。"
+    : isMockMode
     ? "当前为测试数据，本次报告仅用于验证监督流程。正式接入 AI 视觉识别后，将根据真实学习状态生成分析。"
     : buildBasicConclusion(stats);
-  const parentAdvice = isMockMode
+  const parentAdvice = insufficientData
+    ? "建议先完成一段不少于10分钟的监督，确认摄像头角度、识别记录和报告生成流程稳定后，再参考学习建议。"
+    : isMockMode
     ? "当前为测试数据，建议先重点测试摄像头角度、监督流程和报告展示效果。"
     : buildParentAdvice(stats);
   const trend = buildMockTrend(reportLevel, records);
 
   const summary = [
-    `本次学习总时长${stats.totalMinutes}分钟，有效学习${stats.effectiveMinutes}分钟，专注率${stats.focusRate}%。`,
+    records.length >= 5
+      ? `本次学习总时长${stats.totalMinutes}分钟，有效学习${stats.effectiveMinutes}分钟，专注率${stats.focusRate}%。`
+      : `本次学习总时长${stats.totalMinutes}分钟，有效学习${stats.effectiveMinutes}分钟，专注率数据采集中。`,
     conclusion,
     parentAdvice
   ].join("\n");

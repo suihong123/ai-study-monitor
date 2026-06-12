@@ -22,6 +22,7 @@ export function ReportCard({
 }) {
   const [expanded, setExpanded] = useState(false);
   const isMockMode = records.length === 0 || records.some((record) => (record.analyze_mode ?? "mock") === "mock");
+  const insufficientData = stats.totalMinutes < 10 || records.length < 5;
   const visibleRecords = expanded ? records : records.slice(0, 20);
   const totalStatusCount =
     stats.studyingCount +
@@ -30,14 +31,16 @@ export function ReportCard({
     stats.lyingCount +
     stats.unrelatedCount +
     stats.unknownCount;
-  const summary = isMockMode
+  const summary = insufficientData
+    ? "数据量不足，本报告仅供测试。请完成至少10分钟监督并产生5条以上识别记录后再查看学习诊断。"
+    : isMockMode
     ? "当前为测试模式，本次报告用于检查监督流程、摄像头角度和报告展示效果。"
     : buildOneLineSummary(stats);
 
   const coreItems = [
     ["总监督时长", `${stats.totalMinutes}分钟`],
     ["有效学习时长", `${stats.effectiveMinutes}分钟`],
-    ["专注率", `${stats.focusRate}%`],
+    ["专注率", records.length >= 5 ? `${stats.focusRate}%` : "数据采集中"],
     ["异常次数", `${stats.abnormalCount}次`],
     ["提醒次数", `${stats.reminderCount}次`],
     ["最长连续专注时长", `${stats.longestFocusMinutes}分钟`]
@@ -76,9 +79,11 @@ export function ReportCard({
       </div>
 
       <div className="rounded-md border border-line bg-white p-5">
-        <h2 className="text-lg font-semibold">{isMockMode ? "测试关键事件" : "关键事件"}</h2>
+        <h2 className="text-lg font-semibold">
+          {isMockMode || insufficientData ? "测试关键事件" : "关键事件"}
+        </h2>
         <div className="mt-3 space-y-2 text-sm leading-6 text-muted">
-          {buildKeyEvents(records, stats).map((item) => (
+          {buildKeyEvents(records, stats, insufficientData).map((item) => (
             <div key={item} className="rounded-md bg-panel p-3">{item}</div>
           ))}
         </div>
@@ -101,12 +106,20 @@ export function ReportCard({
 
       <div className="rounded-md border border-line bg-white p-5">
         <h2 className="text-lg font-semibold">学习结论</h2>
-        <p className="mt-3 whitespace-pre-line leading-7 text-muted">{conclusion}</p>
+        <p className="mt-3 whitespace-pre-line leading-7 text-muted">
+          {insufficientData
+            ? "数据量不足，本报告仅供测试。当前不生成专注率结论和学习诊断。"
+            : conclusion}
+        </p>
       </div>
 
       <div className="rounded-md border border-line bg-white p-5">
         <h2 className="text-lg font-semibold">给家长的建议</h2>
-        <p className="mt-3 whitespace-pre-line leading-7 text-muted">{parentAdvice}</p>
+        <p className="mt-3 whitespace-pre-line leading-7 text-muted">
+          {insufficientData
+            ? "建议先完成一段不少于10分钟的监督，确认摄像头角度、识别记录和报告生成流程稳定后，再参考学习建议。"
+            : parentAdvice}
+        </p>
       </div>
 
       <div className="rounded-md border border-line bg-white p-5">
@@ -127,6 +140,11 @@ export function ReportCard({
                   <span className="text-muted">
                     {record.triggered_reminder ? "已提醒" : "未提醒"}
                   </span>
+                  {typeof record.confidence === "number" && (
+                    <span className="text-muted">
+                      置信度：{Math.round(record.confidence * 100)}%
+                    </span>
+                  )}
                   {record.manual_corrected && (
                     <span className="rounded-md bg-amber-50 px-2 py-1 text-warn">
                       已手动纠正
@@ -150,7 +168,7 @@ export function ReportCard({
         )}
       </div>
 
-      {reportLevel !== "basic" && trend && !isMockMode && (
+      {reportLevel !== "basic" && trend && !isMockMode && !insufficientData && (
         <div className="rounded-md border border-line bg-white p-5">
           <h2 className="text-lg font-semibold">趋势分析</h2>
           <div className="mt-4 grid gap-3">
@@ -174,8 +192,8 @@ function buildOneLineSummary(stats: StudyStats) {
   return "本次学习异常较多，建议优先检查学习环境和任务难度。";
 }
 
-function buildKeyEvents(records: StudyRecord[], stats: StudyStats) {
-  return [
+function buildKeyEvents(records: StudyRecord[], stats: StudyStats, insufficientData: boolean) {
+  const events = [
     `本次共出现 ${stats.abnormalCount} 次异常状态`,
     `最集中异常时段：${findAbnormalWindow(records)}`,
     stats.longestFocusMinutes > 0
@@ -183,6 +201,15 @@ function buildKeyEvents(records: StudyRecord[], stats: StudyStats) {
       : "本次没有检测到连续稳定学习时段",
     `本次触发提醒 ${stats.reminderCount} 次`
   ];
+
+  if (insufficientData) {
+    return [
+      "识别记录少于5条或监督时长不足10分钟，暂不生成学习诊断。",
+      ...events
+    ];
+  }
+
+  return events;
 }
 
 function findAbnormalWindow(records: StudyRecord[]) {

@@ -21,6 +21,7 @@ export async function GET(request: NextRequest) {
   }
 
   const since = todayStartIso();
+  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
   const sessionId = request.nextUrl.searchParams.get("sessionId");
 
   const [
@@ -33,7 +34,9 @@ export async function GET(request: NextRequest) {
     todayErrorLogs,
     suspiciousLogs,
     todaySuspiciousLogs,
-    adminActions
+    adminActions,
+    qwenAllLogs,
+    qwenSevenDayLogs
   ] = await Promise.all([
     supabaseAdmin.from("access_codes").select("*").order("created_at", { ascending: false }),
     supabaseAdmin
@@ -66,7 +69,16 @@ export async function GET(request: NextRequest) {
       .from("admin_actions")
       .select("*, access_codes(code)")
       .order("created_at", { ascending: false })
-      .limit(200)
+      .limit(200),
+    supabaseAdmin
+      .from("ai_call_logs")
+      .select("estimated_cost")
+      .eq("model_type", "vision_qwen"),
+    supabaseAdmin
+      .from("ai_call_logs")
+      .select("estimated_cost")
+      .eq("model_type", "vision_qwen")
+      .gte("created_at", sevenDaysAgo)
   ]);
 
   const failed = [
@@ -79,7 +91,9 @@ export async function GET(request: NextRequest) {
     todayErrorLogs,
     suspiciousLogs,
     todaySuspiciousLogs,
-    adminActions
+    adminActions,
+    qwenAllLogs,
+    qwenSevenDayLogs
   ].find((result) => result.error);
 
   if (failed?.error) {
@@ -93,6 +107,19 @@ export async function GET(request: NextRequest) {
   );
   const mockAnalyzeCount = todayAiRows.filter((row) => row.model_type === "vision_mock").length;
   const qwenAnalyzeCount = todayAiRows.filter((row) => row.model_type === "vision_qwen").length;
+  const qwenAllRows = qwenAllLogs.data ?? [];
+  const qwenSevenDayRows = qwenSevenDayLogs.data ?? [];
+  const qwenTotalCost = qwenAllRows.reduce(
+    (sum, row) => sum + Number(row.estimated_cost ?? 0),
+    0
+  );
+  const qwenTodayCost = todayAiRows
+    .filter((row) => row.model_type === "vision_qwen")
+    .reduce((sum, row) => sum + Number(row.estimated_cost ?? 0), 0);
+  const qwenSevenDayCost = qwenSevenDayRows.reduce(
+    (sum, row) => sum + Number(row.estimated_cost ?? 0),
+    0
+  );
   const { count: correctionCount } = await supabaseAdmin
     .from("records")
     .select("id", { count: "exact", head: true })
@@ -121,6 +148,12 @@ export async function GET(request: NextRequest) {
     todaySuspicious: (todaySuspiciousLogs.data ?? []).length,
     mockAnalyzeCount,
     qwenAnalyzeCount,
+    qwenTotalCalls: qwenAllRows.length,
+    qwenTotalCost: Number(qwenTotalCost.toFixed(3)),
+    qwenAverageCost:
+      qwenAllRows.length > 0 ? Number((qwenTotalCost / qwenAllRows.length).toFixed(3)) : 0,
+    qwenTodayCost: Number(qwenTodayCost.toFixed(3)),
+    qwenSevenDayCost: Number(qwenSevenDayCost.toFixed(3)),
     manualCorrectionCount: correctionCount ?? 0,
     manualCorrectionRate:
       recordCount && recordCount > 0

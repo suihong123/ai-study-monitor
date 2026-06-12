@@ -109,6 +109,11 @@ const dashboardLabels: Record<string, string> = {
   todaySuspicious: "今日可疑访问次数",
   mockAnalyzeCount: "Mock识别次数",
   qwenAnalyzeCount: "Qwen识别次数",
+  qwenTotalCalls: "Qwen总调用次数",
+  qwenTotalCost: "Qwen总成本",
+  qwenAverageCost: "Qwen平均单次成本",
+  qwenTodayCost: "Qwen今日成本",
+  qwenSevenDayCost: "Qwen最近7天成本",
   manualCorrectionCount: "手动纠错次数",
   manualCorrectionRate: "手动纠错率"
 };

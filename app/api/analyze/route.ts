@@ -20,39 +20,65 @@ const statusWeights: Array<{ status: StudyStatus; weight: number; reason: string
 
 const recentStatuses = new Map<string, StudyStatus[]>();
 
-const qwenPrompt = `你是一名儿童学习状态观察助手。
-请根据图片判断孩子当前学习状态。
+const validStatuses: StudyStatus[] = [
+  "studying",
+  "distracted",
+  "away",
+  "lying",
+  "unrelated",
+  "unknown"
+];
 
-只判断可见行为，不做人脸识别，不判断身份，不判断情绪。
+const qwenPrompt = `你是一名儿童学习监督助手。
 
-请优先判断以下问题：
+请根据图片判断当前学习状态。
 
-1. 画面中是否有人坐在学习位置？
-2. 是否明显离开座位？
-3. 是否在看书、写字、看作业、看屏幕学习？
-4. 是否存在明显分心行为，例如东张西望、玩玩具、玩手机、摆弄无关物品？
-5. 是否趴桌或明显疲劳？
+仅判断当前可见行为。
 
-只能返回以下状态之一：
-studying：正在学习或保持学习状态
-distracted：疑似走神或注意力偏离
-away：离开座位或画面中无人
-lying：趴桌或明显疲劳
-unrelated：玩无关物品、玩手机、明显非学习行为
-unknown：画面不清晰或无法判断
+不要识别人脸。
+不要判断身份。
+不要判断年龄。
+不要判断情绪。
 
-返回 JSON：
+请判断：
+
+1. 是否有人在学习位置
+2. 是否离开座位
+3. 是否在看书、写字、阅读、学习
+4. 是否存在明显走神行为
+5. 是否在玩手机
+6. 是否在玩与学习无关的物品
+7. 是否趴桌
+
+只返回：
+
+studying
+distracted
+away
+lying
+unrelated
+unknown
+
+同时返回：
+
+confidence
+
+0~1
+
+同时返回：
+
+reason
+
+简短说明。
+
+JSON格式：
 {
 "status": "studying",
-"confidence": 0.82,
-"reason": "孩子坐在书桌前，视线朝向桌面，未发现明显分心行为"
+"confidence": 0.92,
+"reason": "孩子位于书桌前，视线朝向桌面。"
 }
 
-要求：
-- 不要返回多余文本
-- 不要做身份识别
-- 不要描述脸部特征
-- 不要判断孩子情绪`;
+不要返回其它内容。`;
 
 function pickMockStatus(sessionId: string) {
   const previous = recentStatuses.get(sessionId) ?? [];
@@ -124,10 +150,15 @@ async function analyzeWithQwen(image: string) {
   const result = await response.json();
   const content = result.choices?.[0]?.message?.content;
   const parsed = typeof content === "string" ? JSON.parse(content) : content;
+
+  const status = validStatuses.includes(parsed.status) ? parsed.status : "unknown";
+  const confidence = Math.min(1, Math.max(0, Number(parsed.confidence ?? 0.5)));
+  const reason = String(parsed.reason ?? "Qwen-VL返回结果。").slice(0, 160);
+
   return {
-    status: parsed.status as StudyStatus,
-    confidence: Number(parsed.confidence ?? 0.5),
-    reason: String(parsed.reason ?? "Qwen-VL返回结果。")
+    status,
+    confidence,
+    reason
   };
 }
 
@@ -171,6 +202,7 @@ export async function POST(request: NextRequest) {
     confidence: analyzed.confidence,
     reason: analyzed.reason,
     analyzeMode,
+    analyze_mode: analyzeMode,
     provider: analyzeMode === "qwen" ? "qwen-vl" : "mock"
   };
 
@@ -184,7 +216,7 @@ export async function POST(request: NextRequest) {
         timestamp: new Date().toISOString(),
         confidence: output.confidence,
         reason: output.reason,
-        analyze_mode: output.analyzeMode,
+        analyze_mode: output.analyze_mode,
         ai_called: true
       })
       .select("id")
