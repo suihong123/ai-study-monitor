@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase/server";
 import { validateSessionRequest } from "@/lib/security";
-import type { StudyStatus } from "@/types";
+import type { LearningState, Presence, StudyStatus } from "@/types";
 
 const validStatuses: StudyStatus[] = [
   "studying",
@@ -11,6 +11,16 @@ const validStatuses: StudyStatus[] = [
   "unrelated",
   "unknown"
 ];
+
+function presenceFromStatus(status: StudyStatus): Presence {
+  return status === "away" ? "away" : "present";
+}
+
+function learningStateFromStatus(status: StudyStatus): LearningState {
+  if (status === "studying") return "studying";
+  if (status === "distracted" || status === "unrelated") return "suspected_distracted";
+  return "unknown";
+}
 
 export async function POST(request: NextRequest) {
   const body = await request.json();
@@ -39,6 +49,8 @@ export async function POST(request: NextRequest) {
     .from("records")
     .update({
       status: body.status,
+      presence: presenceFromStatus(body.status),
+      learning_state: learningStateFromStatus(body.status),
       manual_corrected: true,
       correction_source: "user",
       corrected_at: new Date().toISOString()

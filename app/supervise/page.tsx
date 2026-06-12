@@ -9,6 +9,8 @@ import { calculateStats } from "@/lib/stats";
 import {
   intensityLabels,
   type AccessCode,
+  type LearningState,
+  type Presence,
   type StudyRecord,
   type StudySession,
   type StudyStatus,
@@ -71,6 +73,8 @@ export default function SupervisePage() {
   const initialAnalyzeTimerRef = useRef<number | null>(null);
   const [current, setCurrent] = useState<CurrentSupervision | null>(null);
   const [status, setStatus] = useState<StudyStatus>("unknown");
+  const [presence, setPresence] = useState<Presence>("present");
+  const [learningState, setLearningState] = useState<LearningState>("unknown");
   const [records, setRecords] = useState<StudyRecord[]>([]);
   const [cameraError, setCameraError] = useState("");
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
@@ -257,11 +261,16 @@ export default function SupervisePage() {
       }
       analyzeFailureCountRef.current = 0;
       const nextStatus = (result.status ?? "unknown") as StudyStatus;
+      const nextPresence = (result.presence ?? legacyPresenceFromStatus(nextStatus)) as Presence;
+      const nextLearningState = (result.learning_state ??
+        legacyLearningStateFromStatus(nextStatus)) as LearningState;
       const draftRecords = [
         ...recordsRef.current,
         {
           id: result.recordId ?? undefined,
           status: nextStatus,
+          presence: nextPresence,
+          learning_state: nextLearningState,
           timestamp: new Date().toISOString(),
           confidence: result.confidence ?? null,
           reason: result.reason ?? null,
@@ -284,6 +293,8 @@ export default function SupervisePage() {
       recordsRef.current = nextRecords;
       setRecords(nextRecords);
       setStatus(nextStatus);
+      setPresence(nextPresence);
+      setLearningState(nextLearningState);
       aiCallCountRef.current += 1;
       setAiCallCount(aiCallCountRef.current);
       updateDynamicInterval(nextRecords);
@@ -320,6 +331,8 @@ export default function SupervisePage() {
           ? {
               ...record,
               status: nextStatus,
+              presence: legacyPresenceFromStatus(nextStatus),
+              learning_state: legacyLearningStateFromStatus(nextStatus),
               manual_corrected: true,
               correction_source: "user",
               corrected_at: new Date().toISOString()
@@ -329,6 +342,8 @@ export default function SupervisePage() {
       recordsRef.current = correctedRecords;
       setRecords(correctedRecords);
       setStatus(nextStatus);
+      setPresence(legacyPresenceFromStatus(nextStatus));
+      setLearningState(legacyLearningStateFromStatus(nextStatus));
 
       await fetch("/api/records/correct", {
         method: "POST",
@@ -575,7 +590,7 @@ export default function SupervisePage() {
           <div className="rounded-md border border-line bg-white p-4">
             <div className="text-sm text-muted">当前状态</div>
             <div className="mt-2 flex items-center justify-between gap-2">
-              <StatusBadge status={status} />
+              <StatusBadge status={status} presence={presence} learningState={learningState} />
               <span className="text-sm text-muted">
                 {analyzing ? "分析中" : "自动调整中"}
               </span>
@@ -628,9 +643,8 @@ export default function SupervisePage() {
                     })}
                   </div>
                   <div className="mt-1">
-                    {record.status === "studying"
-                      ? "学习中"
-                      : `${record.status === "distracted" ? "疑似走神" : record.status === "away" ? "离座" : record.status === "lying" ? "趴桌" : record.status === "unrelated" ? "无关物品" : "无法判断"}${record.triggered_reminder ? "，已提醒" : ""}`}
+                    {displayStateText(record)}
+                    {record.triggered_reminder ? "，已提醒" : ""}
                   </div>
                   <div className="mt-1 text-xs text-muted">
                     置信度：
@@ -689,7 +703,7 @@ export default function SupervisePage() {
                 <div className="grid gap-3 text-sm sm:grid-cols-2">
                   <DebugItem label="图片尺寸" value={`${lastAnalyzeImage.width} × ${lastAnalyzeImage.height}`} />
                   <DebugItem label="图片大小" value={`${lastAnalyzeImage.sizeKb} KB`} />
-                  <DebugItem label="最近一次识别状态" value={latestRecord ? statusText(latestRecord.status) : "-"} />
+                  <DebugItem label="最近一次识别状态" value={latestRecord ? displayStateText(latestRecord) : "-"} />
                   <DebugItem
                     label="最近一次 analyze_mode"
                     value={latestRecord?.analyze_mode === "qwen" ? "真实AI识别" : latestRecord ? "模拟识别" : "-"}
@@ -743,13 +757,24 @@ function intensityFromInterval(intervalSeconds: number): SupervisionIntensity {
   return "low";
 }
 
-function statusText(status: StudyStatus) {
-  if (status === "studying") return "学习中";
-  if (status === "distracted") return "疑似走神";
-  if (status === "away") return "离座";
-  if (status === "lying") return "趴桌";
-  if (status === "unrelated") return "无关物品";
-  return "无法判断";
+function displayStateText(record: StudyRecord) {
+  const currentPresence = record.presence ?? legacyPresenceFromStatus(record.status);
+  const currentLearningState = record.learning_state ?? legacyLearningStateFromStatus(record.status);
+  if (currentPresence === "away") return "离座";
+  if (currentLearningState === "studying") return "在位 · 学习中";
+  if (currentLearningState === "thinking") return "在位 · 思考中";
+  if (currentLearningState === "suspected_distracted") return "在位 · 疑似走神";
+  return "在位 · 无法判断";
+}
+
+function legacyPresenceFromStatus(status: StudyStatus): Presence {
+  return status === "away" ? "away" : "present";
+}
+
+function legacyLearningStateFromStatus(status: StudyStatus): LearningState {
+  if (status === "studying") return "studying";
+  if (status === "distracted" || status === "unrelated") return "suspected_distracted";
+  return "unknown";
 }
 
 function DebugItem({

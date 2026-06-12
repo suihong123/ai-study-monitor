@@ -13,7 +13,21 @@ import {
   logSuspicious,
   validateSessionRequest
 } from "@/lib/security";
-import type { AccessCodeStatus, PlanConfig, PlanType, ReportLevel, StudyRecord } from "@/types";
+import type {
+  AccessCodeStatus,
+  LearningState,
+  PlanConfig,
+  PlanType,
+  ReportLevel,
+  StudyRecord,
+  StudyStatus
+} from "@/types";
+
+function legacyLearningStateFromStatus(status: StudyStatus): LearningState {
+  if (status === "studying") return "studying";
+  if (status === "distracted" || status === "unrelated") return "suspected_distracted";
+  return "unknown";
+}
 
 function missingSupabase() {
   return NextResponse.json(
@@ -536,6 +550,8 @@ async function handleFinishSession(request: NextRequest, body: {
         supabaseAdmin!
           .from("records")
           .update({
+            presence: record.presence ?? (record.status === "away" ? "away" : "present"),
+            learning_state: record.learning_state ?? legacyLearningStateFromStatus(record.status),
             current_frequency_seconds: record.current_frequency_seconds ?? null,
             frequency_boosted_by_abnormal: record.frequency_boosted_by_abnormal ?? false,
             frequency_lowered_by_focus: record.frequency_lowered_by_focus ?? false,
@@ -555,6 +571,8 @@ async function handleFinishSession(request: NextRequest, body: {
       unsavedRecords.map((record) => ({
         session_id: body.sessionId,
         status: record.status,
+        presence: record.presence ?? (record.status === "away" ? "away" : "present"),
+        learning_state: record.learning_state ?? legacyLearningStateFromStatus(record.status),
         timestamp: record.timestamp,
         confidence: record.confidence ?? null,
         reason: record.reason ?? null,

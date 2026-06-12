@@ -87,6 +87,10 @@ create table if not exists records (
   confidence numeric,
   reason text,
   analyze_mode text default 'mock',
+  presence text default 'present' check (presence in ('present', 'away')),
+  learning_state text default 'unknown' check (
+    learning_state in ('studying', 'thinking', 'suspected_distracted', 'unknown')
+  ),
   current_frequency_seconds integer,
   frequency_boosted_by_abnormal boolean default false,
   frequency_lowered_by_focus boolean default false,

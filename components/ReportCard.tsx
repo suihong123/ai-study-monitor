@@ -1,7 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { statusLabels, type ReportLevel, type StudyRecord, type StudyStats } from "@/types";
+import { normalizeRecordState } from "@/lib/stats";
+import { type ReportLevel, type StudyRecord, type StudyStats } from "@/types";
 
 type Trend = Record<string, string> | null;
 
@@ -26,6 +27,7 @@ export function ReportCard({
   const visibleRecords = expanded ? records : records.slice(0, 20);
   const totalStatusCount =
     stats.studyingCount +
+    (stats.thinkingCount ?? 0) +
     stats.distractedCount +
     stats.awayCount +
     stats.lyingCount +
@@ -48,7 +50,8 @@ export function ReportCard({
 
   const statusItems = [
     ["学习中", stats.studyingCount],
-    ["走神", stats.distractedCount],
+    ["思考中", stats.thinkingCount ?? 0],
+    ["疑似走神", stats.suspectedDistractedCount ?? stats.distractedCount],
     ["离座", stats.awayCount],
     ["趴桌", stats.lyingCount],
     ["玩无关物品", stats.unrelatedCount],
@@ -135,7 +138,7 @@ export function ReportCard({
                 </div>
                 <div className="mt-2 flex flex-wrap items-center gap-2">
                   <span className="rounded-md bg-white px-2 py-1 font-medium">
-                    {statusLabels[record.status]}
+                    {displayStateText(record)}
                   </span>
                   <span className="text-muted">
                     {record.triggered_reminder ? "已提醒" : "未提醒"}
@@ -213,13 +216,23 @@ function buildKeyEvents(records: StudyRecord[], stats: StudyStats, insufficientD
 }
 
 function findAbnormalWindow(records: StudyRecord[]) {
-  const abnormal = records.filter((record) =>
-    ["distracted", "away", "lying", "unrelated"].includes(record.status)
-  );
+  const abnormal = records.filter((record) => {
+    const state = normalizeRecordState(record);
+    return state.presence === "away" || state.learningState === "suspected_distracted";
+  });
   if (abnormal.length === 0) return "未出现集中异常";
   const first = abnormal[0];
   const last = abnormal[Math.min(abnormal.length - 1, 2)];
   return `${formatMinute(first.timestamp)}-${formatMinute(last.timestamp)}`;
+}
+
+function displayStateText(record: StudyRecord) {
+  const state = normalizeRecordState(record);
+  if (state.presence === "away") return "离座";
+  if (state.learningState === "studying") return "在位 · 学习中";
+  if (state.learningState === "thinking") return "在位 · 思考中";
+  if (state.learningState === "suspected_distracted") return "在位 · 疑似走神";
+  return "在位 · 无法判断";
 }
 
 function formatMinute(value: string) {

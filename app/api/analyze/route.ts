@@ -7,7 +7,7 @@ import {
   logError,
   validateSessionRequest
 } from "@/lib/security";
-import type { StudyStatus } from "@/types";
+import type { LearningState, Presence, StudyStatus } from "@/types";
 
 const statusWeights: Array<{ status: StudyStatus; weight: number; reason: string }> = [
   { status: "studying", weight: 70, reason: "模拟结果：孩子保持学习状态。" },
@@ -29,6 +29,14 @@ const validStatuses: StudyStatus[] = [
   "unknown"
 ];
 
+const validPresence: Presence[] = ["present", "away"];
+const validLearningStates: LearningState[] = [
+  "studying",
+  "thinking",
+  "suspected_distracted",
+  "unknown"
+];
+
 const awayCorrectionTerms = [
   "人物",
   "上半身",
@@ -38,9 +46,14 @@ const awayCorrectionTerms = [
   "画面中有人"
 ];
 
-const qwenPrompt = `你是一名儿童学习监督助手。
+const qwenPrompt = `你是儿童学习监督助手。
 
-请根据图片判断当前学习状态。
+你的任务不是寻找走神证据，而是优先判断：
+
+1. 人是否仍在学习位置
+2. 是否存在明确学习行为
+3. 是否只是思考状态
+4. 是否真的出现持续分心
 
 仅判断当前可见行为。
 
@@ -49,62 +62,33 @@ const qwenPrompt = `你是一名儿童学习监督助手。
 不要判断年龄。
 不要判断情绪。
 
-请判断：
+判断原则：
+检测到人物时，禁止返回 away。
+看到人脸或上半身时，presence=present。
+手托头、停笔思考、凝视桌面，优先 thinking。
+单次看向镜头，不能判定为走神。
+单次抬头，不能判定为走神。
+缺少桌面、双手、作业本等关键信息，优先 unknown。
+宁可 unknown，不要把在位学生错误判定为离座或走神。
 
-1. 是否有人在学习位置
-2. 是否离开座位
-3. 是否在看书、写字、阅读、学习
-4. 是否存在明显走神行为
-5. 是否在玩手机
-6. 是否在玩与学习无关的物品
-7. 是否趴桌
+第一层 presence 只能返回：
+present：检测到人脸、上半身、头肩区域，或人物仍在学习位置附近
+away：画面无人、座位空了、人物明显离开学习区域
 
-away 的判定规则必须非常严格：
+第二层 learning_state 只能返回：
+studying：看到写字、阅读、书桌、作业本、书本、键盘输入、学习工具
+thinking：人在位置，手托头、停笔思考、凝视桌面、短暂发呆、数学题思考、阅读理解思考
+suspected_distracted：持续东张西望、持续看镜头、持续玩无关物品、持续偏离学习区域
+unknown：画面过近、仅有人脸、看不到桌面、看不到双手、看不到学习区域、光线差、遮挡严重
 
-1. away 只能用于：
-   - 画面中无人
-   - 座位明显空着
-   - 人已经离开学习区域
-2. 只要画面中有人，不能直接判断为 away。
-3. 如果画面中有人，但看不到桌面、双手、书本、作业区域，应返回 unknown。
-4. 如果画面中有人，坐在位置附近，但没有明显学习动作，应返回 distracted 或 unknown，不要返回 away。
-5. 如果人物在画面中，哪怕没有学习动作，也不能判定为离座。
-
-状态含义：
-
-studying：能看到人在学习位置，并且存在看书、写字、阅读、看学习屏幕等学习行为
-distracted：画面中有人，人在座位或学习区域附近，但注意力疑似偏离或没有明显学习动作
-away：画面中无人、座位明显空着，或人已经离开学习区域
-lying：趴桌或明显不适合继续学习的趴伏姿势
-unrelated：画面中有人，但正在玩手机、玩具或明显无关物品
-unknown：画面中有人但证据不足，例如看不到桌面、双手、书本、作业区域，或画面不清晰无法判断
-
-只返回：
-
-studying
-distracted
-away
-lying
-unrelated
-unknown
-
-同时返回：
-
-confidence
-
-0~1
-
-同时返回：
-
-reason
-
-简短说明。
+如果 presence=away，learning_state 必须为 unknown。
 
 JSON格式：
 {
-"status": "studying",
-"confidence": 0.92,
-"reason": "孩子位于书桌前，视线朝向桌面。"
+  "presence": "present",
+  "learning_state": "thinking",
+  "confidence": 0.85,
+  "reason": "人物仍在座位上，手托头，未见玩手机或离座行为，可能处于思考状态。"
 }
 
 不要返回其它内容。`;
@@ -119,6 +103,8 @@ function pickMockStatus(sessionId: string) {
   if (repeatedHardStatus) {
     return {
       status: "studying" as StudyStatus,
+      presence: "present" as Presence,
+      learning_state: "studying" as LearningState,
       confidence: 0.86,
       reason: "模拟结果：连续异常后恢复为学习状态。"
     };
@@ -137,6 +123,8 @@ function pickMockStatus(sessionId: string) {
 
   return {
     status: nextStatus,
+    presence: nextStatus === "away" ? "away" as Presence : "present" as Presence,
+    learning_state: legacyLearningStateFromStatus(nextStatus),
     confidence: Number((0.78 + Math.random() * 0.16).toFixed(2)),
     reason: selected.reason
   };
@@ -212,20 +200,43 @@ async function analyzeWithQwen(image: string) {
   const content = result.choices?.[0]?.message?.content;
   const parsed = typeof content === "string" ? JSON.parse(content) : content;
 
-  let status = validStatuses.includes(parsed.status) ? parsed.status : "unknown";
+  let presence: Presence = validPresence.includes(parsed.presence) ? parsed.presence : "present";
+  let learningState: LearningState = validLearningStates.includes(parsed.learning_state)
+    ? parsed.learning_state
+    : legacyLearningStateFromStatus(parsed.status);
   const confidence = Math.min(1, Math.max(0, Number(parsed.confidence ?? 0.5)));
   let reason = String(parsed.reason ?? "Qwen-VL返回结果。").slice(0, 160);
 
-  if (status === "away" && awayCorrectionTerms.some((term) => reason.includes(term))) {
-    status = "unknown";
+  if (presence === "away" && awayCorrectionTerms.some((term) => reason.includes(term))) {
+    presence = "present";
+    learningState = "unknown";
     reason = `${reason} 系统修正：画面中有人，不能判定为离座。`;
   }
 
+  if (presence === "away") {
+    learningState = "unknown";
+  }
+
   return {
-    status,
+    status: legacyStatusFromState(presence, learningState),
+    presence,
+    learning_state: learningState,
     confidence,
     reason
   };
+}
+
+function legacyLearningStateFromStatus(status: unknown): LearningState {
+  if (status === "studying") return "studying";
+  if (status === "distracted" || status === "unrelated") return "suspected_distracted";
+  return "unknown";
+}
+
+function legacyStatusFromState(presence: Presence, learningState: LearningState): StudyStatus {
+  if (presence === "away") return "away";
+  if (learningState === "studying" || learningState === "thinking") return "studying";
+  if (learningState === "suspected_distracted") return "distracted";
+  return "unknown";
 }
 
 export async function POST(request: NextRequest) {
@@ -265,6 +276,8 @@ export async function POST(request: NextRequest) {
 
   const output = {
     status: analyzed.status,
+    presence: analyzed.presence,
+    learning_state: analyzed.learning_state,
     confidence: analyzed.confidence,
     reason: analyzed.reason,
     analyzeMode,
@@ -279,6 +292,8 @@ export async function POST(request: NextRequest) {
       .insert({
         session_id: auth.context.session.id,
         status: output.status,
+        presence: output.presence,
+        learning_state: output.learning_state,
         timestamp: new Date().toISOString(),
         confidence: output.confidence,
         reason: output.reason,

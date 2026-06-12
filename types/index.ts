@@ -6,6 +6,14 @@ export type StudyStatus =
   | "unrelated"
   | "unknown";
 
+export type Presence = "present" | "away";
+
+export type LearningState =
+  | "studying"
+  | "thinking"
+  | "suspected_distracted"
+  | "unknown";
+
 export type PlanType =
   | "trial"
   | "basic_monthly"
@@ -66,6 +74,8 @@ export type StudyRecord = {
   confidence?: number | null;
   reason?: string | null;
   analyze_mode?: string;
+  presence?: Presence;
+  learning_state?: LearningState;
   current_frequency_seconds?: number;
   frequency_boosted_by_abnormal?: boolean;
   frequency_lowered_by_focus?: boolean;
@@ -99,6 +109,8 @@ export type StudyStats = {
   effectiveMinutes: number;
   focusRate: number;
   studyingCount: number;
+  thinkingCount: number;
+  suspectedDistractedCount: number;
   distractedCount: number;
   awayCount: number;
   lyingCount: number;
@@ -122,7 +134,7 @@ export type ReportPayload = {
 
 export const statusLabels: Record<StudyStatus, string> = {
   studying: "正常学习",
-  distracted: "走神",
+  distracted: "疑似走神",
   away: "离座",
   lying: "趴桌",
   unrelated: "玩无关物品",

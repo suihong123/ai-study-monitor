@@ -75,6 +75,8 @@ type AdminOverview = {
       id: string;
       timestamp: string;
       status: string;
+      presence?: string | null;
+      learning_state?: string | null;
       current_frequency_seconds?: number | null;
       frequency_boosted_by_abnormal?: boolean | null;
       frequency_lowered_by_focus?: boolean | null;
@@ -497,7 +499,7 @@ export default function AdminPage() {
           <div className="mt-4 max-h-80 overflow-auto">
             {(overview.sessionDetail.records ?? []).map((record) => (
               <div key={record.id} className="mb-2 rounded-md bg-panel p-3 text-sm">
-                {formatDate(record.timestamp)} / {record.status} / 频率
+                {formatDate(record.timestamp)} / {record.presence ?? "-"} / {record.learning_state ?? record.status} / 频率
                 {record.current_frequency_seconds ?? "-"}秒 / 提醒
                 {record.triggered_reminder ? "是" : "否"} / 调AI
                 {record.ai_called === false ? "否" : "是"} / 错误
