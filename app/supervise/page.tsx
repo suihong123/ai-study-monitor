@@ -22,6 +22,13 @@ type CurrentSupervision = {
   todayRemainingMinutes: number;
 };
 
+type LastAnalyzeImage = {
+  dataUrl: string;
+  width: number;
+  height: number;
+  sizeKb: string;
+};
+
 const reminders: Partial<Record<StudyStatus, string>> = {
   distracted: "请继续专注学习",
   away: "请回到座位继续完成作业",
@@ -34,6 +41,14 @@ const correctionButtons: Array<{ status: StudyStatus; label: string }> = [
   { status: "away", label: "我离座了" },
   { status: "lying", label: "我趴桌了" },
   { status: "unrelated", label: "我在玩无关物品" }
+];
+
+const angleWarningTerms = [
+  "未见书桌",
+  "未见学习行为",
+  "未看到桌面",
+  "未看到双手",
+  "画面不清晰"
 ];
 
 export default function SupervisePage() {
@@ -55,6 +70,8 @@ export default function SupervisePage() {
   const [aiCallCount, setAiCallCount] = useState(0);
   const [currentIntervalSeconds, setCurrentIntervalSeconds] = useState(60);
   const [intensity, setIntensity] = useState<SupervisionIntensity>("basic");
+  const [lastAnalyzeImage, setLastAnalyzeImage] = useState<LastAnalyzeImage | null>(null);
+  const [imagePreviewOpen, setImagePreviewOpen] = useState(false);
 
   const elapsedMinutes = Math.floor(elapsedSeconds / 60);
   const todayRemainingMinutes = Math.max(
@@ -67,6 +84,10 @@ export default function SupervisePage() {
   );
 
   const stats = useMemo(() => calculateStats(records), [records]);
+  const latestRecord = records[records.length - 1];
+  const shouldShowAngleWarning =
+    latestRecord?.status === "unknown" &&
+    angleWarningTerms.some((term) => latestRecord.reason?.includes(term));
 
   const speak = useCallback((text: string) => {
     if (!("speechSynthesis" in window)) return;
@@ -147,7 +168,7 @@ export default function SupervisePage() {
     [speak]
   );
 
-  const captureImage = useCallback(() => {
+  const captureImage = useCallback((): LastAnalyzeImage | null => {
     const video = videoRef.current;
     if (!video || video.readyState < 2 || video.videoWidth === 0) return null;
 
@@ -157,14 +178,21 @@ export default function SupervisePage() {
     const context = canvas.getContext("2d");
     if (!context) return null;
     context.drawImage(video, 0, 0, canvas.width, canvas.height);
-    return canvas.toDataURL("image/jpeg", 0.6);
+    const dataUrl = canvas.toDataURL("image/jpeg", 0.6);
+    return {
+      dataUrl,
+      width: canvas.width,
+      height: canvas.height,
+      sizeKb: estimateDataUrlSizeKb(dataUrl)
+    };
   }, []);
 
   const analyze = useCallback(async () => {
     if (!current) return;
-    const image = captureImage();
-    if (!image || analyzingRef.current) return;
+    const imagePayload = captureImage();
+    if (!imagePayload || analyzingRef.current) return;
     const activeSupervision = current;
+    setLastAnalyzeImage(imagePayload);
 
     analyzingRef.current = true;
     setAnalyzing(true);
@@ -173,7 +201,7 @@ export default function SupervisePage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          image,
+          image: imagePayload.dataUrl,
           accessCodeId: activeSupervision.accessCode.id,
           sessionId: activeSupervision.session.id,
           sessionToken: activeSupervision.session.session_token
@@ -429,10 +457,30 @@ export default function SupervisePage() {
       <div className="grid gap-4 lg:grid-cols-[1fr_320px]">
         <section>
           <CameraPreview ref={videoRef} />
+          <button
+            type="button"
+            onClick={() => setImagePreviewOpen(true)}
+            className="mt-3 rounded-md border border-line bg-white px-4 py-2 text-sm font-medium"
+          >
+            查看AI识别图片
+          </button>
           {cameraError && (
             <p className="mt-3 rounded-md border border-alert bg-red-50 p-3 text-sm text-alert">
               {cameraError}
             </p>
+          )}
+          {shouldShowAngleWarning && (
+            <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm leading-6 text-warn">
+              <div className="font-medium">当前拍摄角度可能不适合学习监督。</div>
+              <div className="mt-1">建议调整手机位置，让画面同时看到：</div>
+              <ul className="mt-1 list-inside list-disc">
+                <li>孩子上半身</li>
+                <li>双手</li>
+                <li>桌面</li>
+                <li>作业本/书本/屏幕</li>
+                <li>笔或文具</li>
+              </ul>
+            </div>
           )}
         </section>
 
@@ -501,6 +549,8 @@ export default function SupervisePage() {
                       : "-"}
                     {" / "}
                     {record.triggered_reminder ? "已提醒" : "未提醒"}
+                    {" / "}
+                    {record.analyze_mode === "qwen" ? "真实AI识别" : "模拟识别"}
                   </div>
                   {record.reason && (
                     <div className="mt-1 text-xs leading-5 text-muted">
@@ -514,6 +564,91 @@ export default function SupervisePage() {
           </div>
         </aside>
       </div>
+      {imagePreviewOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="max-h-[90vh] w-full max-w-3xl overflow-auto rounded-md bg-white p-5 shadow-lg">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h2 className="text-xl font-semibold">AI实际识别图片</h2>
+                <p className="mt-2 text-sm leading-6 text-muted">
+                  这是系统实际发送给 AI 模型分析的图片，用于检查拍摄角度和截图裁切是否正确。
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setImagePreviewOpen(false)}
+                className="rounded-md border border-line px-3 py-2 text-sm font-medium"
+              >
+                关闭
+              </button>
+            </div>
+
+            {!lastAnalyzeImage ? (
+              <div className="mt-5 rounded-md bg-panel p-4 text-sm text-muted">
+                暂无AI识别图片，请等待首次识别完成。
+              </div>
+            ) : (
+              <div className="mt-5 space-y-4">
+                <img
+                  src={lastAnalyzeImage.dataUrl}
+                  alt="AI实际识别图片"
+                  className="w-full rounded-md border border-line bg-black object-contain"
+                />
+                <div className="grid gap-3 text-sm sm:grid-cols-2">
+                  <DebugItem label="图片尺寸" value={`${lastAnalyzeImage.width} × ${lastAnalyzeImage.height}`} />
+                  <DebugItem label="图片大小" value={`${lastAnalyzeImage.sizeKb} KB`} />
+                  <DebugItem label="最近一次识别状态" value={latestRecord ? statusText(latestRecord.status) : "-"} />
+                  <DebugItem
+                    label="最近一次 analyze_mode"
+                    value={latestRecord?.analyze_mode === "qwen" ? "真实AI识别" : latestRecord ? "模拟识别" : "-"}
+                  />
+                  <DebugItem
+                    label="最近一次 confidence"
+                    value={
+                      typeof latestRecord?.confidence === "number"
+                        ? `${Math.round(latestRecord.confidence * 100)}%`
+                        : "-"
+                    }
+                  />
+                  <DebugItem label="最近一次识别原因" value={latestRecord?.reason ?? "-"} wide />
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </main>
+  );
+}
+
+function estimateDataUrlSizeKb(dataUrl: string) {
+  const base64 = dataUrl.split(",")[1] ?? "";
+  const padding = base64.endsWith("==") ? 2 : base64.endsWith("=") ? 1 : 0;
+  return Math.max(1, Math.round((base64.length * 3) / 4 - padding) / 1024).toFixed(1);
+}
+
+function statusText(status: StudyStatus) {
+  if (status === "studying") return "学习中";
+  if (status === "distracted") return "疑似走神";
+  if (status === "away") return "离座";
+  if (status === "lying") return "趴桌";
+  if (status === "unrelated") return "无关物品";
+  return "无法判断";
+}
+
+function DebugItem({
+  label,
+  value,
+  wide
+}: {
+  label: string;
+  value: string;
+  wide?: boolean;
+}) {
+  return (
+    <div className={`rounded-md bg-panel p-3 ${wide ? "sm:col-span-2" : ""}`}>
+      <div className="text-xs text-muted">{label}</div>
+      <div className="mt-1 break-words font-medium">{value}</div>
+    </div>
   );
 }
