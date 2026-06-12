@@ -79,6 +79,12 @@ type AdminOverview = {
       triggered_reminder?: boolean | null;
       ai_called?: boolean | null;
       error_message?: string | null;
+      analyze_mode?: string | null;
+      confidence?: number | null;
+      reason?: string | null;
+      manual_corrected?: boolean | null;
+      correction_source?: string | null;
+      corrected_at?: string | null;
     }>;
     aiCalls: AdminLog[];
     errors: AdminLog[];
@@ -100,7 +106,11 @@ const dashboardLabels: Record<string, string> = {
   todayEstimatedAiCost: "今日预估AI成本",
   todayReports: "今日报告生成次数",
   todayErrors: "今日错误次数",
-  todaySuspicious: "今日可疑访问次数"
+  todaySuspicious: "今日可疑访问次数",
+  mockAnalyzeCount: "Mock识别次数",
+  qwenAnalyzeCount: "Qwen识别次数",
+  manualCorrectionCount: "手动纠错次数",
+  manualCorrectionRate: "手动纠错率"
 };
 
 export default function AdminPage() {
@@ -477,6 +487,14 @@ export default function AdminPage() {
                 {record.triggered_reminder ? "是" : "否"} / 调AI
                 {record.ai_called === false ? "否" : "是"} / 错误
                 {record.error_message ?? "无"}
+                <div className="mt-1 text-xs text-muted">
+                  模式 {record.analyze_mode ?? "-"} / 置信度 {record.confidence ?? "-"} / 原因 {record.reason ?? "-"}
+                </div>
+                {record.manual_corrected && (
+                  <div className="mt-1 text-xs text-alert">
+                    已手动纠正 / 来源 {record.correction_source ?? "-"} / {formatDate(record.corrected_at)}
+                  </div>
+                )}
               </div>
             ))}
           </div>

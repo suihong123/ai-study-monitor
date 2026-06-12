@@ -21,7 +21,9 @@ export function ReportCard({
     ["总学习时长", `${stats.totalMinutes}分钟`],
     ["有效学习时长", `${stats.effectiveMinutes}分钟`],
     ["专注率", `${stats.focusRate}%`],
-    ["异常次数", `${stats.abnormalCount}次`]
+    ["异常次数", `${stats.abnormalCount}次`],
+    ["提醒次数", `${stats.reminderCount}次`],
+    ["最长连续专注", `${stats.longestFocusMinutes}分钟`]
   ];
 
   const statusItems = [
@@ -29,7 +31,8 @@ export function ReportCard({
     ["走神", stats.distractedCount],
     ["离座", stats.awayCount],
     ["趴桌", stats.lyingCount],
-    ["无关物品", stats.unrelatedCount]
+    ["无关物品", stats.unrelatedCount],
+    ["无法判断", stats.unknownCount]
   ];
 
   return (
@@ -56,18 +59,18 @@ export function ReportCard({
       </div>
 
       <div className="rounded-md border border-line bg-white p-5">
-        <h2 className="text-lg font-semibold">时间线</h2>
+        <h2 className="text-lg font-semibold">监督过程时间线</h2>
         <div className="mt-4 max-h-72 space-y-2 overflow-auto">
           {records.length === 0 ? (
             <p className="text-sm text-muted">暂无识别记录。</p>
           ) : (
-            records.map((record, index) => (
+            buildTimeline(records).map((event, index) => (
               <div
-                key={`${record.timestamp}-${index}`}
+                key={`${event.time}-${index}`}
                 className="flex items-center justify-between rounded-md bg-panel px-3 py-2 text-sm"
               >
-                <span>{new Date(record.timestamp).toLocaleTimeString("zh-CN")}</span>
-                <span className="font-medium">{statusLabels[record.status]}</span>
+                <span>{new Date(event.time).toLocaleTimeString("zh-CN")}</span>
+                <span className="font-medium">{event.label}</span>
               </div>
             ))
           )}
@@ -105,6 +108,28 @@ export function ReportCard({
       )}
     </section>
   );
+}
+
+function buildTimeline(records: StudyRecord[]) {
+  if (records.length === 0) return [];
+  const events = [{ time: records[0].timestamp, label: "开始监督" }];
+  let previous = records[0].status;
+  let studyingStreak = previous === "studying" ? 1 : 0;
+
+  records.forEach((record, index) => {
+    if (index === 0) return;
+    if (record.status === "studying") {
+      studyingStreak += 1;
+      if (previous !== "studying") events.push({ time: record.timestamp, label: "恢复学习" });
+      if (studyingStreak === 3) events.push({ time: record.timestamp, label: "连续学习" });
+    } else {
+      studyingStreak = 0;
+      events.push({ time: record.timestamp, label: statusLabels[record.status] });
+    }
+    previous = record.status;
+  });
+  events.push({ time: records[records.length - 1].timestamp, label: "结束监督" });
+  return events;
 }
 
 function trendTitle(key: string) {

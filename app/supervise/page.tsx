@@ -28,6 +28,14 @@ const reminders: Partial<Record<StudyStatus, string>> = {
   lying: "请保持良好学习姿势"
 };
 
+const correctionButtons: Array<{ status: StudyStatus; label: string }> = [
+  { status: "studying", label: "我在学习" },
+  { status: "distracted", label: "我走神了" },
+  { status: "away", label: "我离座了" },
+  { status: "lying", label: "我趴桌了" },
+  { status: "unrelated", label: "我在玩无关物品" }
+];
+
 export default function SupervisePage() {
   const router = useRouter();
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -180,8 +188,12 @@ export default function SupervisePage() {
       const draftRecords = [
         ...recordsRef.current,
         {
+          id: result.recordId ?? undefined,
           status: nextStatus,
           timestamp: new Date().toISOString(),
+          confidence: result.confidence ?? null,
+          reason: result.reason ?? null,
+          analyze_mode: result.analyzeMode ?? "mock",
           current_frequency_seconds: currentIntervalSeconds,
           ai_called: true,
           triggered_reminder: false,
@@ -206,6 +218,42 @@ export default function SupervisePage() {
       setAnalyzing(false);
     }
   }, [captureImage, current, currentIntervalSeconds, maybeRemind, updateDynamicInterval]);
+
+  const correctLatestRecord = useCallback(
+    async (nextStatus: StudyStatus) => {
+      if (!current) return;
+      const latest = recordsRef.current[recordsRef.current.length - 1];
+      if (!latest?.id) return;
+
+      const correctedRecords = recordsRef.current.map((record, index) =>
+        index === recordsRef.current.length - 1
+          ? {
+              ...record,
+              status: nextStatus,
+              manual_corrected: true,
+              correction_source: "user",
+              corrected_at: new Date().toISOString()
+            }
+          : record
+      );
+      recordsRef.current = correctedRecords;
+      setRecords(correctedRecords);
+      setStatus(nextStatus);
+
+      await fetch("/api/records/correct", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          accessCodeId: current.accessCode.id,
+          sessionId: current.session.id,
+          sessionToken: current.session.session_token,
+          recordId: latest.id,
+          status: nextStatus
+        })
+      });
+    },
+    [current]
+  );
 
   const finish = useCallback(async () => {
     if (!current || finishingRef.current) return;
@@ -356,6 +404,9 @@ export default function SupervisePage() {
 
   return (
     <main className="mx-auto min-h-screen w-full max-w-5xl px-4 py-5">
+      <div className="mb-4 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm leading-6 text-warn">
+        当前为测试模式，状态识别为模拟结果，正式版将接入 AI 视觉模型。
+      </div>
       <div className="mb-4 flex items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold">学习监督中</h1>
@@ -388,6 +439,20 @@ export default function SupervisePage() {
                 {analyzing ? "分析中" : `${currentIntervalSeconds}秒后更新`}
               </span>
             </div>
+            <div className="mt-4 border-t border-line pt-3">
+              <div className="text-sm font-medium">识别不准？手动标记当前状态</div>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {correctionButtons.map((item) => (
+                  <button
+                    key={item.status}
+                    onClick={() => void correctLatestRecord(item.status)}
+                    className="rounded-md border border-line px-3 py-2 text-sm"
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
           <div className="rounded-md border border-line bg-white p-4">
             <div className="text-sm text-muted">当前监督强度</div>
@@ -405,6 +470,22 @@ export default function SupervisePage() {
           <div className="rounded-md border border-line bg-white p-4">
             <div className="text-sm text-muted">当前专注率</div>
             <div className="mt-1 text-2xl font-semibold">{stats.focusRate}%</div>
+          </div>
+          <div className="rounded-md border border-line bg-white p-4">
+            <div className="text-sm font-medium">最近记录</div>
+            <div className="mt-3 space-y-2 text-sm">
+              {records.slice(-10).reverse().map((record, index) => (
+                <div key={`${record.timestamp}-${index}`} className="flex justify-between gap-2 rounded-md bg-panel px-3 py-2">
+                  <span>{new Date(record.timestamp).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</span>
+                  <span>
+                    {record.status === "studying"
+                      ? "学习中"
+                      : `${record.status === "distracted" ? "疑似走神" : record.status === "away" ? "离座" : record.status === "lying" ? "趴桌" : record.status === "unrelated" ? "无关物品" : "无法判断"}${record.triggered_reminder ? "，已提醒" : ""}`}
+                  </span>
+                </div>
+              ))}
+              {records.length === 0 && <div className="text-muted">暂无记录</div>}
+            </div>
           </div>
         </aside>
       </div>

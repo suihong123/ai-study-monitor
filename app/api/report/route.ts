@@ -19,16 +19,42 @@ function findDeclinePeriod(records: StudyRecord[]) {
 }
 
 function buildBasicConclusion(stats: ReturnType<typeof calculateStats>) {
-  if (stats.focusRate >= 80) return "本次学习专注度较好，有效学习时间占比较高。";
-  if (stats.focusRate >= 60) return "本次学习基本完成，但中途存在一定走神或姿态问题。";
-  return "本次有效学习占比偏低，建议家长关注任务难度、休息节奏和桌面干扰。";
+  if (stats.focusRate >= 80) return "本次学习状态较好，整体专注度较高。";
+  if (stats.focusRate >= 60) return "本次学习状态一般，中途存在一定分心，需要关注容易走神的时间段。";
+  return "本次有效学习时间偏低，建议缩短单次学习时长，采用分段学习。";
 }
 
 function buildParentAdvice(stats: ReturnType<typeof calculateStats>) {
-  if (stats.awayCount > 0) return "建议开始前准备好文具、水杯和作业清单，减少中途离座。";
-  if (stats.lyingCount > 0) return "建议调整桌椅高度和灯光，提醒孩子保持稳定坐姿。";
-  if (stats.distractedCount >= 3) return "建议采用25分钟学习+5分钟休息模式，降低连续学习疲劳。";
-  return "建议保持当前学习安排，结束后用简短复盘帮助孩子确认完成情况。";
+  const advice: string[] = [];
+  if (stats.awayCount >= 2) {
+    advice.push("本次离座次数较多，建议家长关注学习前是否准备充分，例如水杯、文具、作业材料。");
+  }
+  if (stats.distractedCount >= 3) {
+    advice.push("本次分心次数较多，建议采用25分钟学习+5分钟休息模式。");
+  }
+  const unknownRate =
+    stats.studyingCount +
+      stats.distractedCount +
+      stats.awayCount +
+      stats.lyingCount +
+      stats.unrelatedCount +
+      stats.unknownCount ===
+    0
+      ? 0
+      : stats.unknownCount /
+        (stats.studyingCount +
+          stats.distractedCount +
+          stats.awayCount +
+          stats.lyingCount +
+          stats.unrelatedCount +
+          stats.unknownCount);
+  if (unknownRate > 0.2) {
+    advice.push("画面识别不稳定，建议调整手机角度，确保能看到孩子上半身、桌面和双手。");
+  }
+  if (advice.length === 0) {
+    advice.push("建议保持当前学习安排，结束后用简短复盘帮助孩子确认完成情况。");
+  }
+  return advice.join("\n");
 }
 
 function buildMockTrend(reportLevel: ReportLevel, records: StudyRecord[]) {

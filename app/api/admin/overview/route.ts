@@ -91,6 +91,15 @@ export async function GET(request: NextRequest) {
   const reportRows = todayAiRows.filter((row) =>
     String(row.model_type ?? "").startsWith("report_")
   );
+  const mockAnalyzeCount = todayAiRows.filter((row) => row.model_type === "vision_mock").length;
+  const qwenAnalyzeCount = todayAiRows.filter((row) => row.model_type === "vision_qwen").length;
+  const { count: correctionCount } = await supabaseAdmin
+    .from("records")
+    .select("id", { count: "exact", head: true })
+    .eq("manual_corrected", true);
+  const { count: recordCount } = await supabaseAdmin
+    .from("records")
+    .select("id", { count: "exact", head: true });
 
   const dashboard = {
     todayNewAccessCodes: (accessCodes.data ?? []).filter(
@@ -109,7 +118,14 @@ export async function GET(request: NextRequest) {
     ),
     todayReports: reportRows.length,
     todayErrors: (todayErrorLogs.data ?? []).length,
-    todaySuspicious: (todaySuspiciousLogs.data ?? []).length
+    todaySuspicious: (todaySuspiciousLogs.data ?? []).length,
+    mockAnalyzeCount,
+    qwenAnalyzeCount,
+    manualCorrectionCount: correctionCount ?? 0,
+    manualCorrectionRate:
+      recordCount && recordCount > 0
+        ? Number((((correctionCount ?? 0) / recordCount) * 100).toFixed(1))
+        : 0
   };
 
   const allAiRows = aiLogs.data ?? [];

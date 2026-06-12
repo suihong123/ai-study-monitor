@@ -63,10 +63,16 @@ export type StudyRecord = {
   session_id?: string;
   status: StudyStatus;
   timestamp: string;
+  confidence?: number | null;
+  reason?: string | null;
+  analyze_mode?: string;
   current_frequency_seconds?: number;
   triggered_reminder?: boolean;
   ai_called?: boolean;
   error_message?: string | null;
+  manual_corrected?: boolean;
+  correction_source?: string | null;
+  corrected_at?: string | null;
 };
 
 export type StudySession = {
@@ -97,6 +103,8 @@ export type StudyStats = {
   unrelatedCount: number;
   unknownCount: number;
   abnormalCount: number;
+  reminderCount: number;
+  longestFocusMinutes: number;
 };
 
 export type ReportPayload = {

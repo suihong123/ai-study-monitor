@@ -88,6 +88,12 @@ alter table records add column if not exists current_frequency_seconds integer;
 alter table records add column if not exists triggered_reminder boolean default false;
 alter table records add column if not exists ai_called boolean default true;
 alter table records add column if not exists error_message text;
+alter table records add column if not exists confidence numeric;
+alter table records add column if not exists reason text;
+alter table records add column if not exists analyze_mode text default 'mock';
+alter table records add column if not exists manual_corrected boolean default false;
+alter table records add column if not exists correction_source text;
+alter table records add column if not exists corrected_at timestamptz;
 
 create table if not exists error_logs (
   id uuid primary key default gen_random_uuid(),

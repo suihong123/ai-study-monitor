@@ -59,6 +59,14 @@
 
 文件路径：`supabase/migration_2026_06_plan_reports.sql`
 
+本轮识别质量字段迁移：
+
+```sql
+-- 见 supabase/migration_2026_07_records_accuracy.sql
+```
+
+文件路径：`supabase/migration_2026_07_records_accuracy.sql`
+
 新增观测和风控表：
 
 - `error_logs`：错误日志
@@ -66,6 +74,7 @@
 - `suspicious_logs`：可疑访问、限流、多设备和无效访问记录
 - `sessions.session_token`：本次监督会话令牌
 - `records.current_frequency_seconds`、`triggered_reminder`、`ai_called`、`error_message`：单次识别时间线调试字段
+- `records.confidence`、`reason`、`analyze_mode`、`manual_corrected`、`correction_source`、`corrected_at`：识别质量评估和手动纠错字段
 
 ## 环境变量
 
@@ -78,6 +87,9 @@ SUPABASE_URL=你的Supabase项目URL
 SUPABASE_SERVICE_ROLE_KEY=你的Supabase service role key
 ADMIN_PASSWORD=后台管理密码
 QWEN_API_KEY=后续Qwen-VL服务端密钥
+QWEN_API_URL=后续Qwen-VL接口地址
+QWEN_MODEL=后续Qwen-VL模型名
+ANALYZE_MODE=mock
 DEEPSEEK_API_KEY=后续DeepSeek服务端密钥
 ```
 
@@ -87,6 +99,7 @@ DEEPSEEK_API_KEY=后续DeepSeek服务端密钥
 - API Routes 使用 `SUPABASE_SERVICE_ROLE_KEY` 写入访问码、会话和记录。
 - `ADMIN_PASSWORD` 用于保护 `/admin` 的接口操作。
 - AI API Key 只能放在服务端环境变量里，不得写入前端代码。
+- `ANALYZE_MODE` 默认为 `mock`；设置为 `qwen` 时尝试调用 Qwen-VL，Qwen 环境变量缺失会自动回退 Mock 并写入错误日志。
 
 ## 后台使用
 

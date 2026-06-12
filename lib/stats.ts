@@ -13,6 +13,16 @@ export function calculateStats(records: StudyRecord[], durationMinutes?: number)
   const awayCount = count("away");
   const lyingCount = count("lying");
   const unrelatedCount = count("unrelated");
+  let longestStudyingStreak = 0;
+  let currentStudyingStreak = 0;
+  records.forEach((record) => {
+    if (record.status === "studying") {
+      currentStudyingStreak += 1;
+      longestStudyingStreak = Math.max(longestStudyingStreak, currentStudyingStreak);
+    } else {
+      currentStudyingStreak = 0;
+    }
+  });
 
   return {
     totalMinutes,
@@ -24,7 +34,9 @@ export function calculateStats(records: StudyRecord[], durationMinutes?: number)
     lyingCount,
     unrelatedCount,
     unknownCount: count("unknown"),
-    abnormalCount: distractedCount + awayCount + lyingCount + unrelatedCount
+    abnormalCount: distractedCount + awayCount + lyingCount + unrelatedCount,
+    reminderCount: records.filter((record) => record.triggered_reminder).length,
+    longestFocusMinutes: longestStudyingStreak
   };
 }
 

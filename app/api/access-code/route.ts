@@ -528,16 +528,42 @@ async function handleFinishSession(request: NextRequest, body: {
   const aiCallCount = body.aiCallCount ?? records.length;
   const estimatedCost = estimateCost(aiCallCount, reportLevel);
 
-  if (records.length > 0) {
+  const unsavedRecords = records.filter((record) => !record.id);
+  const savedRecords = records.filter((record) => record.id);
+  if (savedRecords.length > 0) {
+    await Promise.all(
+      savedRecords.map((record) =>
+        supabaseAdmin!
+          .from("records")
+          .update({
+            current_frequency_seconds: record.current_frequency_seconds ?? null,
+            triggered_reminder: record.triggered_reminder ?? false,
+            error_message: record.error_message ?? null,
+            manual_corrected: record.manual_corrected ?? false,
+            correction_source: record.correction_source ?? null,
+            corrected_at: record.corrected_at ?? null
+          })
+          .eq("id", record.id)
+          .eq("session_id", body.sessionId)
+      )
+    );
+  }
+  if (unsavedRecords.length > 0) {
     const { error: recordsError } = await supabaseAdmin!.from("records").insert(
-      records.map((record) => ({
+      unsavedRecords.map((record) => ({
         session_id: body.sessionId,
         status: record.status,
         timestamp: record.timestamp,
+        confidence: record.confidence ?? null,
+        reason: record.reason ?? null,
+        analyze_mode: record.analyze_mode ?? "mock",
         current_frequency_seconds: record.current_frequency_seconds ?? null,
         triggered_reminder: record.triggered_reminder ?? false,
         ai_called: record.ai_called ?? true,
-        error_message: record.error_message ?? null
+        error_message: record.error_message ?? null,
+        manual_corrected: record.manual_corrected ?? false,
+        correction_source: record.correction_source ?? null,
+        corrected_at: record.corrected_at ?? null
       }))
     );
     if (recordsError) {

@@ -84,10 +84,16 @@ create table if not exists records (
     status in ('studying', 'distracted', 'away', 'lying', 'unrelated', 'unknown')
   ),
   timestamp timestamptz not null,
+  confidence numeric,
+  reason text,
+  analyze_mode text default 'mock',
   current_frequency_seconds integer,
   triggered_reminder boolean default false,
   ai_called boolean default true,
-  error_message text
+  error_message text,
+  manual_corrected boolean default false,
+  correction_source text,
+  corrected_at timestamptz
 );
 
 create table if not exists error_logs (
