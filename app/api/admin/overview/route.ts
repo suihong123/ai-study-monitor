@@ -14,7 +14,7 @@ export async function GET(request: NextRequest) {
       errorType: "未授权访问",
       errorMessage: "后台接口密码错误或缺失"
     });
-    return NextResponse.json({ error: "后台密码错误" }, { status: 401 });
+    return NextResponse.json({ error: "验证失败" }, { status: 401 });
   }
   if (!supabaseAdmin) {
     return NextResponse.json({ error: "Supabase环境变量未配置" }, { status: 500 });

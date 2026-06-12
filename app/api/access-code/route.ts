@@ -38,7 +38,7 @@ function missingSupabase() {
 
 export async function GET(request: NextRequest) {
   if (!isAdminRequest(request)) {
-    return NextResponse.json({ error: "后台密码错误" }, { status: 401 });
+    return NextResponse.json({ error: "验证失败" }, { status: 401 });
   }
   if (!supabaseAdmin) return missingSupabase();
 
@@ -62,7 +62,7 @@ export async function POST(request: NextRequest) {
   }
 
   if (!isAdminRequest(request)) {
-    return NextResponse.json({ error: "后台密码错误" }, { status: 401 });
+    return NextResponse.json({ error: "验证失败" }, { status: 401 });
   }
 
   if (action === "create") {

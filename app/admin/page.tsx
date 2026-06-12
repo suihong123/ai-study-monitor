@@ -124,11 +124,13 @@ const dashboardLabels: Record<string, string> = {
 
 export default function AdminPage() {
   const [password, setPassword] = useState("");
+  const [isVerified, setIsVerified] = useState(false);
   const [planType, setPlanType] = useState<PlanType>("trial");
   const [overview, setOverview] = useState<AdminOverview>({});
   const [selectedSessionId, setSelectedSessionId] = useState("");
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
+  const [lockedUntil, setLockedUntil] = useState(0);
 
   async function loadAdmin(adminPassword = password, sessionId = selectedSessionId) {
     if (!adminPassword) return;
@@ -141,9 +143,53 @@ export default function AdminPage() {
       });
       const result = await response.json();
       if (!response.ok) {
-        setMessage(result.error ?? "读取失败");
+        setMessage(response.status === 401 ? "验证失败" : result.error ?? "读取失败");
         return;
       }
+      setOverview(result);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function login(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (Date.now() < lockedUntil) {
+      setMessage("尝试次数过多，请稍后再试。");
+      return;
+    }
+    if (!password) return;
+
+    setLoading(true);
+    setMessage("");
+    try {
+      const response = await fetch("/api/admin/overview", {
+        headers: { "x-admin-password": password }
+      });
+      const result = await response.json();
+      if (!response.ok) {
+        if (response.status !== 401) {
+          setMessage(result.error ?? "读取失败");
+          return;
+        }
+        const failedCount = Number(window.sessionStorage.getItem("admin_failed_count") ?? "0") + 1;
+        window.sessionStorage.setItem("admin_failed_count", String(failedCount));
+        if (failedCount >= 5) {
+          const nextLockedUntil = Date.now() + 10 * 60 * 1000;
+          window.sessionStorage.setItem("admin_locked_until", String(nextLockedUntil));
+          setLockedUntil(nextLockedUntil);
+          setMessage("尝试次数过多，请稍后再试。");
+          return;
+        }
+        setMessage("验证失败");
+        return;
+      }
+
+      window.sessionStorage.setItem("admin_verified", "true");
+      window.sessionStorage.removeItem("admin_failed_count");
+      window.sessionStorage.removeItem("admin_locked_until");
+      setLockedUntil(0);
+      setIsVerified(true);
       setOverview(result);
     } finally {
       setLoading(false);
@@ -165,7 +211,7 @@ export default function AdminPage() {
       });
       const result = await response.json();
       if (!response.ok) {
-        setMessage(result.error ?? "创建失败");
+        setMessage(response.status === 401 ? "验证失败" : result.error ?? "创建失败");
         return;
       }
       setMessage(`已创建访问码：${result.accessCode.code}`);
@@ -197,7 +243,7 @@ export default function AdminPage() {
       });
       const result = await response.json();
       if (!response.ok) {
-        setMessage(result.error ?? "操作失败");
+        setMessage(response.status === 401 ? "验证失败" : result.error ?? "操作失败");
         return;
       }
       await loadAdmin();
@@ -254,16 +300,38 @@ export default function AdminPage() {
   }
 
   useEffect(() => {
-    const saved = window.sessionStorage.getItem("admin-password");
-    if (saved) {
-      setPassword(saved);
-      void loadAdmin(saved, "");
-    }
+    setIsVerified(window.sessionStorage.getItem("admin_verified") === "true");
+    setLockedUntil(Number(window.sessionStorage.getItem("admin_locked_until") ?? "0"));
   }, []);
 
-  function savePassword(value: string) {
-    setPassword(value);
-    window.sessionStorage.setItem("admin-password", value);
+  if (!isVerified) {
+    const isLocked = Date.now() < lockedUntil;
+    return (
+      <main className="mx-auto flex min-h-screen w-full max-w-md items-center px-4 py-6">
+        <form onSubmit={login} className="w-full rounded-md border border-line bg-white p-5">
+          <h1 className="text-2xl font-bold">管理后台</h1>
+          <input
+            type="password"
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+            className="mt-4 h-11 w-full rounded-md border border-line px-3 outline-none focus:border-brand"
+            placeholder="请输入管理密码"
+            disabled={isLocked || loading}
+          />
+          <button
+            disabled={isLocked || loading || !password}
+            className="mt-3 h-11 w-full rounded-md bg-brand px-4 font-semibold text-white disabled:opacity-60"
+          >
+            进入后台
+          </button>
+          {message && (
+            <div className="mt-3 rounded-md border border-line bg-panel p-3 text-sm text-muted">
+              {message}
+            </div>
+          )}
+        </form>
+      </main>
+    );
   }
 
   return (
@@ -282,7 +350,7 @@ export default function AdminPage() {
             id="password"
             type="password"
             value={password}
-            onChange={(event) => savePassword(event.target.value)}
+            onChange={(event) => setPassword(event.target.value)}
             className="h-11 flex-1 rounded-md border border-line px-3 outline-none focus:border-brand"
             placeholder="请输入后台密码"
           />
