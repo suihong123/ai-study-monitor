@@ -643,9 +643,9 @@ export default function SupervisePage() {
               系统会根据学习状态自动调整监督频率。
             </div>
           </div>
-          <Timer label="已监督时长" minutes={elapsedMinutes} />
+          <Timer label="本次监督总时长" minutes={elapsedMinutes} />
           <Timer label="今日剩余额度" minutes={todayRemainingMinutes} />
-          <Timer label="总剩余监督时长" minutes={totalRemainingMinutes} />
+          <Timer label="账号总剩余额度" minutes={totalRemainingMinutes} />
           <div className="rounded-md border border-line bg-white p-4">
             <div className="text-sm text-muted">当前专注率</div>
             <div className="mt-1 text-2xl font-semibold">
@@ -665,6 +665,9 @@ export default function SupervisePage() {
               <MetricPill label="有效学习" value={`${learningInsights.studyingMinutes}分钟`} />
               <MetricPill label="思考时长" value={`${learningInsights.thinkingMinutes}分钟`} />
               <MetricPill label="异常时长" value={`${learningInsights.abnormalMinutes}分钟`} />
+            </div>
+            <div className="mt-3 text-xs leading-5 text-muted">
+              学习时长根据AI识别结果统计，无法判断状态不计入有效学习或异常时长。
             </div>
           </div>
           <div className="rounded-md border border-line bg-white p-4">
