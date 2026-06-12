@@ -51,6 +51,10 @@ const angleWarningTerms = [
   "画面不清晰"
 ];
 
+const abnormalStatuses: StudyStatus[] = ["distracted", "unrelated", "lying", "away"];
+
+type FrequencyReason = "normal" | "abnormal" | "focused";
+
 export default function SupervisePage() {
   const router = useRouter();
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -60,7 +64,11 @@ export default function SupervisePage() {
   const finishingRef = useRef(false);
   const analyzingRef = useRef(false);
   const intensityUntilRef = useRef(0);
+  const abnormalLockRef = useRef(false);
   const aiCallCountRef = useRef(0);
+  const analyzeFailureCountRef = useRef(0);
+  const frequencyReasonRef = useRef<FrequencyReason>("normal");
+  const initialAnalyzeTimerRef = useRef<number | null>(null);
   const [current, setCurrent] = useState<CurrentSupervision | null>(null);
   const [status, setStatus] = useState<StudyStatus>("unknown");
   const [records, setRecords] = useState<StudyRecord[]>([]);
@@ -69,9 +77,10 @@ export default function SupervisePage() {
   const [analyzing, setAnalyzing] = useState(false);
   const [aiCallCount, setAiCallCount] = useState(0);
   const [currentIntervalSeconds, setCurrentIntervalSeconds] = useState(60);
-  const [intensity, setIntensity] = useState<SupervisionIntensity>("basic");
+  const [intensity, setIntensity] = useState<SupervisionIntensity>("standard");
   const [lastAnalyzeImage, setLastAnalyzeImage] = useState<LastAnalyzeImage | null>(null);
   const [imagePreviewOpen, setImagePreviewOpen] = useState(false);
+  const [pageActive, setPageActive] = useState(true);
 
   const elapsedMinutes = Math.floor(elapsedSeconds / 60);
   const todayRemainingMinutes = Math.max(
@@ -98,44 +107,68 @@ export default function SupervisePage() {
     window.speechSynthesis.speak(utterance);
   }, []);
 
+  const applyInterval = useCallback((nextInterval: number, reason: FrequencyReason) => {
+    setCurrentIntervalSeconds(nextInterval);
+    setIntensity(intensityFromInterval(nextInterval));
+    frequencyReasonRef.current = reason;
+  }, []);
+
+  const defaultIntervalForNow = useCallback(() => {
+    if (!current) return 60;
+    const liveElapsedMinutes = Math.floor((Date.now() - startedAtRef.current.getTime()) / 60_000);
+    return applyPlanLimit(timeDefaultInterval(liveElapsedMinutes), current.accessCode);
+  }, [current]);
+
+  const highIntervalForCurrentPlan = useCallback(() => {
+    if (!current) return 60;
+    return applyPlanLimit(15, current.accessCode);
+  }, [current]);
+
   const updateDynamicInterval = useCallback((nextRecords: StudyRecord[]) => {
     const latest = nextRecords[nextRecords.length - 1];
     if (!latest || !current) return;
 
-    const baseInterval = current.accessCode.base_interval_seconds;
-    const minInterval = current.accessCode.min_interval_seconds;
+    const defaultInterval = defaultIntervalForNow();
+    const highInterval = highIntervalForCurrentPlan();
     const recentStudyingCount = [...nextRecords]
       .reverse()
       .findIndex((record) => record.status !== "studying");
     const consecutiveStudying =
       recentStudyingCount === -1 ? nextRecords.length : recentStudyingCount;
+    const recentNormalCount = [...nextRecords]
+      .reverse()
+      .findIndex((record) => !abnormalStatuses.includes(record.status));
+    const consecutiveAbnormal =
+      recentNormalCount === -1 ? nextRecords.length : recentNormalCount;
+
+    if (consecutiveStudying >= 8) {
+      intensityUntilRef.current = 0;
+      abnormalLockRef.current = false;
+      applyInterval(slowerInterval(defaultInterval), "focused");
+      return;
+    }
 
     if (consecutiveStudying >= 2) {
       intensityUntilRef.current = 0;
-      setIntensity("basic");
-      setCurrentIntervalSeconds(baseInterval);
+      abnormalLockRef.current = false;
+      applyInterval(defaultInterval, "normal");
       return;
     }
 
-    if (latest.status === "distracted") {
+    if (abnormalStatuses.includes(latest.status)) {
       intensityUntilRef.current = Date.now() + 3 * 60 * 1000;
-      setIntensity("boosted");
-      setCurrentIntervalSeconds(Math.max(30, minInterval));
+      abnormalLockRef.current = consecutiveAbnormal >= 2;
+      applyInterval(highInterval, "abnormal");
       return;
     }
 
-    if (["away", "lying", "unrelated"].includes(latest.status)) {
-      intensityUntilRef.current = Date.now() + 2 * 60 * 1000;
-      setIntensity("high");
-      setCurrentIntervalSeconds(minInterval);
+    if (abnormalLockRef.current || Date.now() < intensityUntilRef.current) {
+      applyInterval(highInterval, "abnormal");
       return;
     }
 
-    if (Date.now() > intensityUntilRef.current) {
-      setIntensity("basic");
-      setCurrentIntervalSeconds(baseInterval);
-    }
-  }, [current]);
+    applyInterval(defaultInterval, "normal");
+  }, [applyInterval, current, defaultIntervalForNow, highIntervalForCurrentPlan]);
 
   const maybeRemind = useCallback(
     (nextRecords: StudyRecord[]) => {
@@ -188,10 +221,11 @@ export default function SupervisePage() {
   }, []);
 
   const analyze = useCallback(async () => {
-    if (!current) return;
+    if (!current || finishingRef.current || document.hidden || !navigator.onLine) return;
     const imagePayload = captureImage();
     if (!imagePayload || analyzingRef.current) return;
     const activeSupervision = current;
+    const currentFrequencyReason = frequencyReasonRef.current;
     setLastAnalyzeImage(imagePayload);
 
     analyzingRef.current = true;
@@ -204,14 +238,24 @@ export default function SupervisePage() {
           image: imagePayload.dataUrl,
           accessCodeId: activeSupervision.accessCode.id,
           sessionId: activeSupervision.session.id,
-          sessionToken: activeSupervision.session.session_token
+          sessionToken: activeSupervision.session.session_token,
+          currentFrequencySeconds: currentIntervalSeconds,
+          frequencyBoostedByAbnormal: currentFrequencyReason === "abnormal",
+          frequencyLoweredByFocus: currentFrequencyReason === "focused"
         })
       });
       const result = await response.json();
       if (!response.ok) {
         setCameraError(result.error ?? "AI识别失败，请稍后重试。");
+        analyzeFailureCountRef.current += 1;
+        if (analyzeFailureCountRef.current >= 3) {
+          intensityUntilRef.current = 0;
+          abnormalLockRef.current = false;
+          applyInterval(defaultIntervalForNow(), "normal");
+        }
         return;
       }
+      analyzeFailureCountRef.current = 0;
       const nextStatus = (result.status ?? "unknown") as StudyStatus;
       const draftRecords = [
         ...recordsRef.current,
@@ -223,6 +267,8 @@ export default function SupervisePage() {
           reason: result.reason ?? null,
           analyze_mode: result.analyze_mode ?? result.analyzeMode ?? "mock",
           current_frequency_seconds: currentIntervalSeconds,
+          frequency_boosted_by_abnormal: currentFrequencyReason === "abnormal",
+          frequency_lowered_by_focus: currentFrequencyReason === "focused",
           ai_called: true,
           triggered_reminder: false,
           error_message: null
@@ -241,11 +287,27 @@ export default function SupervisePage() {
       aiCallCountRef.current += 1;
       setAiCallCount(aiCallCountRef.current);
       updateDynamicInterval(nextRecords);
+    } catch {
+      setCameraError("AI识别失败，请检查网络后继续。");
+      analyzeFailureCountRef.current += 1;
+      if (analyzeFailureCountRef.current >= 3) {
+        intensityUntilRef.current = 0;
+        abnormalLockRef.current = false;
+        applyInterval(defaultIntervalForNow(), "normal");
+      }
     } finally {
       analyzingRef.current = false;
       setAnalyzing(false);
     }
-  }, [captureImage, current, currentIntervalSeconds, maybeRemind, updateDynamicInterval]);
+  }, [
+    applyInterval,
+    captureImage,
+    current,
+    currentIntervalSeconds,
+    defaultIntervalForNow,
+    maybeRemind,
+    updateDynamicInterval
+  ]);
 
   const correctLatestRecord = useCallback(
     async (nextStatus: StudyStatus) => {
@@ -359,9 +421,9 @@ export default function SupervisePage() {
 
   useEffect(() => {
     if (current) {
-      setCurrentIntervalSeconds(current.accessCode.base_interval_seconds);
+      applyInterval(defaultIntervalForNow(), "normal");
     }
-  }, [current]);
+  }, [applyInterval, current, defaultIntervalForNow]);
 
   useEffect(() => {
     if (!current) return;
@@ -384,7 +446,7 @@ export default function SupervisePage() {
           videoRef.current.srcObject = stream;
           await videoRef.current.play();
         }
-        window.setTimeout(() => void analyze(), 1200);
+        initialAnalyzeTimerRef.current = window.setTimeout(() => void analyze(), 1200);
       } catch {
         setCameraError("无法打开摄像头，请确认浏览器权限和HTTPS访问。");
         void fetch("/api/client-error", {
@@ -404,6 +466,10 @@ export default function SupervisePage() {
     void startCamera();
     return () => {
       cancelled = true;
+      if (initialAnalyzeTimerRef.current) {
+        window.clearTimeout(initialAnalyzeTimerRef.current);
+        initialAnalyzeTimerRef.current = null;
+      }
       streamRef.current?.getTracks().forEach((track) => track.stop());
     };
   }, [analyze, current]);
@@ -416,13 +482,34 @@ export default function SupervisePage() {
   }, []);
 
   useEffect(() => {
-    if (!current) return;
+    function updateActivity() {
+      setPageActive(!document.hidden && navigator.onLine);
+    }
+
+    updateActivity();
+    document.addEventListener("visibilitychange", updateActivity);
+    window.addEventListener("online", updateActivity);
+    window.addEventListener("offline", updateActivity);
+    return () => {
+      document.removeEventListener("visibilitychange", updateActivity);
+      window.removeEventListener("online", updateActivity);
+      window.removeEventListener("offline", updateActivity);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!current || !pageActive || finishingRef.current) return;
     const timeout = window.setTimeout(
       () => void analyze(),
       currentIntervalSeconds * 1000
     );
     return () => window.clearTimeout(timeout);
-  }, [analyze, current, currentIntervalSeconds, records.length]);
+  }, [analyze, current, currentIntervalSeconds, pageActive, records.length]);
+
+  useEffect(() => {
+    if (!current || abnormalLockRef.current || Date.now() < intensityUntilRef.current) return;
+    applyInterval(defaultIntervalForNow(), "normal");
+  }, [applyInterval, current, defaultIntervalForNow, elapsedMinutes]);
 
   useEffect(() => {
     if (current && (todayRemainingMinutes <= 0 || totalRemainingMinutes <= 0)) {
@@ -490,7 +577,7 @@ export default function SupervisePage() {
             <div className="mt-2 flex items-center justify-between gap-2">
               <StatusBadge status={status} />
               <span className="text-sm text-muted">
-                {analyzing ? "分析中" : `${currentIntervalSeconds}秒后更新`}
+                {analyzing ? "分析中" : "自动调整中"}
               </span>
             </div>
             <div className="mt-4 border-t border-line pt-3">
@@ -512,6 +599,9 @@ export default function SupervisePage() {
             <div className="text-sm text-muted">当前监督强度</div>
             <div className="mt-1 text-2xl font-semibold">
               {intensityLabels[intensity]}
+            </div>
+            <div className="mt-2 text-sm text-muted">
+              系统会根据学习状态自动调整监督频率。
             </div>
           </div>
           <Timer label="已监督时长" minutes={elapsedMinutes} />
@@ -551,6 +641,8 @@ export default function SupervisePage() {
                     {record.triggered_reminder ? "已提醒" : "未提醒"}
                     {" / "}
                     {record.analyze_mode === "qwen" ? "真实AI识别" : "模拟识别"}
+                    {record.frequency_boosted_by_abnormal && " / 异常后提频"}
+                    {record.frequency_lowered_by_focus && " / 连续专注降频"}
                   </div>
                   {record.reason && (
                     <div className="mt-1 text-xs leading-5 text-muted">
@@ -625,6 +717,30 @@ function estimateDataUrlSizeKb(dataUrl: string) {
   const base64 = dataUrl.split(",")[1] ?? "";
   const padding = base64.endsWith("==") ? 2 : base64.endsWith("=") ? 1 : 0;
   return Math.max(1, Math.round((base64.length * 3) / 4 - padding) / 1024).toFixed(1);
+}
+
+function timeDefaultInterval(elapsedMinutes: number) {
+  if (elapsedMinutes < 15) return 15;
+  if (elapsedMinutes < 60) return 30;
+  if (elapsedMinutes < 120) return 60;
+  return 90;
+}
+
+function applyPlanLimit(desiredInterval: number, accessCode: AccessCode) {
+  return Math.max(desiredInterval, accessCode.min_interval_seconds);
+}
+
+function slowerInterval(currentDefaultInterval: number) {
+  if (currentDefaultInterval <= 15) return 30;
+  if (currentDefaultInterval <= 30) return 60;
+  if (currentDefaultInterval <= 60) return 90;
+  return currentDefaultInterval;
+}
+
+function intensityFromInterval(intervalSeconds: number): SupervisionIntensity {
+  if (intervalSeconds <= 30) return "high";
+  if (intervalSeconds <= 60) return "standard";
+  return "low";
 }
 
 function statusText(status: StudyStatus) {

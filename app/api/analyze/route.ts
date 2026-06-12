@@ -249,6 +249,9 @@ export async function POST(request: NextRequest) {
         confidence: output.confidence,
         reason: output.reason,
         analyze_mode: output.analyze_mode,
+        current_frequency_seconds: Number(body.currentFrequencySeconds ?? 0) || null,
+        frequency_boosted_by_abnormal: Boolean(body.frequencyBoostedByAbnormal),
+        frequency_lowered_by_focus: Boolean(body.frequencyLoweredByFocus),
         ai_called: true
       })
       .select("id")

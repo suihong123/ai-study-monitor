@@ -76,6 +76,8 @@ type AdminOverview = {
       timestamp: string;
       status: string;
       current_frequency_seconds?: number | null;
+      frequency_boosted_by_abnormal?: boolean | null;
+      frequency_lowered_by_focus?: boolean | null;
       triggered_reminder?: boolean | null;
       ai_called?: boolean | null;
       error_message?: string | null;
@@ -467,6 +469,9 @@ export default function AdminPage() {
 
       {overview.sessionDetail?.session && (
         <Section title="单次监督详情">
+          {(() => {
+            const frequencyStats = buildFrequencyStats(overview.sessionDetail?.records ?? []);
+            return (
           <div className="grid gap-3 md:grid-cols-4">
             {[
               ["session_id", overview.sessionDetail.session.id],
@@ -474,6 +479,9 @@ export default function AdminPage() {
               ["套餐", overview.sessionDetail.session.access_codes?.plan_type ?? "-"],
               ["总时长", `${overview.sessionDetail.session.duration_minutes ?? 0}分钟`],
               ["AI调用", `${overview.sessionDetail.session.ai_call_count ?? 0}次`],
+              ["平均识别间隔", `${frequencyStats.average}秒`],
+              ["最短识别间隔", `${frequencyStats.min}秒`],
+              ["最长识别间隔", `${frequencyStats.max}秒`],
               ["预估成本", `${overview.sessionDetail.session.estimated_cost ?? 0}元`],
               ["专注率", `${overview.sessionDetail.session.focus_rate ?? 0}%`],
               ["报告等级", overview.sessionDetail.session.report_level ?? "-"]
@@ -484,6 +492,8 @@ export default function AdminPage() {
               </div>
             ))}
           </div>
+            );
+          })()}
           <div className="mt-4 max-h-80 overflow-auto">
             {(overview.sessionDetail.records ?? []).map((record) => (
               <div key={record.id} className="mb-2 rounded-md bg-panel p-3 text-sm">
@@ -494,6 +504,10 @@ export default function AdminPage() {
                 {record.error_message ?? "无"}
                 <div className="mt-1 text-xs text-muted">
                   模式 {record.analyze_mode ?? "-"} / 置信度 {record.confidence ?? "-"} / 原因 {record.reason ?? "-"}
+                </div>
+                <div className="mt-1 text-xs text-muted">
+                  {record.frequency_boosted_by_abnormal ? "异常后提频" : "未因异常提频"} /{" "}
+                  {record.frequency_lowered_by_focus ? "连续专注降频" : "未因连续专注降频"}
                 </div>
                 {record.manual_corrected && (
                   <div className="mt-1 text-xs text-alert">
@@ -573,6 +587,23 @@ function LogSection({ title, rows }: { title: string; rows: AdminLog[] }) {
 function formatDate(value?: string | null) {
   if (!value) return "-";
   return new Date(value).toLocaleString("zh-CN");
+}
+
+function buildFrequencyStats(records: Array<{ current_frequency_seconds?: number | null }>) {
+  const intervals = (records ?? [])
+    .map((record) => Number(record.current_frequency_seconds ?? 0))
+    .filter((value) => Number.isFinite(value) && value > 0);
+
+  if (intervals.length === 0) {
+    return { average: 0, min: 0, max: 0 };
+  }
+
+  const total = intervals.reduce((sum, value) => sum + value, 0);
+  return {
+    average: Math.round(total / intervals.length),
+    min: Math.min(...intervals),
+    max: Math.max(...intervals)
+  };
 }
 
 function statusClass(status: AccessCodeStatus) {

@@ -88,6 +88,8 @@ create table if not exists records (
   reason text,
   analyze_mode text default 'mock',
   current_frequency_seconds integer,
+  frequency_boosted_by_abnormal boolean default false,
+  frequency_lowered_by_focus boolean default false,
   triggered_reminder boolean default false,
   ai_called boolean default true,
   error_message text,

@@ -14,7 +14,7 @@ export type PlanType =
 
 export type ReportLevel = "basic" | "standard" | "advanced";
 
-export type SupervisionIntensity = "basic" | "boosted" | "high";
+export type SupervisionIntensity = "high" | "standard" | "low";
 
 export type AccessCodeStatus =
   | "active"
@@ -67,6 +67,8 @@ export type StudyRecord = {
   reason?: string | null;
   analyze_mode?: string;
   current_frequency_seconds?: number;
+  frequency_boosted_by_abnormal?: boolean;
+  frequency_lowered_by_focus?: boolean;
   triggered_reminder?: boolean;
   ai_called?: boolean;
   error_message?: string | null;
@@ -135,7 +137,7 @@ export const abnormalStatuses: StudyStatus[] = [
 ];
 
 export const intensityLabels: Record<SupervisionIntensity, string> = {
-  basic: "基础监督",
-  boosted: "加强监督",
-  high: "高强度监督"
+  high: "高频监督",
+  standard: "标准监督",
+  low: "低频监督"
 };

@@ -537,6 +537,8 @@ async function handleFinishSession(request: NextRequest, body: {
           .from("records")
           .update({
             current_frequency_seconds: record.current_frequency_seconds ?? null,
+            frequency_boosted_by_abnormal: record.frequency_boosted_by_abnormal ?? false,
+            frequency_lowered_by_focus: record.frequency_lowered_by_focus ?? false,
             triggered_reminder: record.triggered_reminder ?? false,
             error_message: record.error_message ?? null,
             manual_corrected: record.manual_corrected ?? false,
@@ -558,6 +560,8 @@ async function handleFinishSession(request: NextRequest, body: {
         reason: record.reason ?? null,
         analyze_mode: record.analyze_mode ?? "mock",
         current_frequency_seconds: record.current_frequency_seconds ?? null,
+        frequency_boosted_by_abnormal: record.frequency_boosted_by_abnormal ?? false,
+        frequency_lowered_by_focus: record.frequency_lowered_by_focus ?? false,
         triggered_reminder: record.triggered_reminder ?? false,
         ai_called: record.ai_called ?? true,
         error_message: record.error_message ?? null,
