@@ -122,32 +122,64 @@ async function analyzeWithQwen(image: string) {
     throw new Error("Qwen-VL环境变量未完整配置，已回退Mock");
   }
 
+  const requestBody = {
+    model,
+    messages: [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: qwenPrompt },
+          { type: "image_url", image_url: { url: image } }
+        ]
+      }
+    ],
+    response_format: { type: "json_object" }
+  };
+
+  console.info("[Qwen-VL] request", {
+    url: apiUrl,
+    model,
+    body: {
+      ...requestBody,
+      messages: requestBody.messages.map((message) => ({
+        ...message,
+        content: message.content.map((item) =>
+          item.type === "image_url"
+            ? {
+                type: "image_url",
+                image_url: {
+                  url: `[base64 image omitted, length=${image.length}]`
+                }
+              }
+            : item
+        )
+      }))
+    }
+  });
+
   const response = await fetch(apiUrl, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${apiKey}`
     },
-    body: JSON.stringify({
-      model,
-      messages: [
-        {
-          role: "user",
-          content: [
-            { type: "text", text: qwenPrompt },
-            { type: "image_url", image_url: { url: image } }
-          ]
-        }
-      ],
-      response_format: { type: "json_object" }
-    })
+    body: JSON.stringify(requestBody)
+  });
+
+  const responseBody = await response.text();
+  console.info("[Qwen-VL] response", {
+    url: apiUrl,
+    model,
+    status: response.status,
+    ok: response.ok,
+    body: responseBody
   });
 
   if (!response.ok) {
     throw new Error(`Qwen-VL调用失败：${response.status}`);
   }
 
-  const result = await response.json();
+  const result = JSON.parse(responseBody);
   const content = result.choices?.[0]?.message?.content;
   const parsed = typeof content === "string" ? JSON.parse(content) : content;
 
