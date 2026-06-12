@@ -96,10 +96,17 @@ type AdminOverview = {
 };
 
 const planLabels: Record<PlanType, string> = {
-  trial: "trial 体验版",
-  basic_monthly: "basic_monthly 基础月卡",
-  standard_monthly: "standard_monthly 标准月卡",
-  pro_monthly: "pro_monthly 强化月卡"
+  trial: "3天体验版",
+  basic_monthly: "月卡（30天）",
+  standard_monthly: "季卡（90天）",
+  pro_monthly: "年卡（365天）"
+};
+
+const planDescriptions: Record<PlanType, { daily: string; total: string }> = {
+  trial: { daily: "每日60分钟", total: "总额度180分钟" },
+  basic_monthly: { daily: "每日180分钟", total: "总额度5400分钟" },
+  standard_monthly: { daily: "每日180分钟", total: "总额度16200分钟" },
+  pro_monthly: { daily: "每日180分钟", total: "总额度65700分钟" }
 };
 
 const dashboardLabels: Record<string, string> = {
@@ -365,19 +372,26 @@ export default function AdminPage() {
 
       <form
         onSubmit={createCode}
-        className="mb-5 flex flex-col gap-2 rounded-md border border-line bg-white p-4 sm:flex-row"
+        className="mb-5 flex flex-col gap-3 rounded-md border border-line bg-white p-4 sm:flex-row sm:items-start"
       >
-        <select
-          value={planType}
-          onChange={(event) => setPlanType(event.target.value as PlanType)}
-          className="h-11 rounded-md border border-line px-3 outline-none focus:border-brand"
-        >
-          {Object.entries(planLabels).map(([value, label]) => (
-            <option key={value} value={value}>
-              {label}
-            </option>
-          ))}
-        </select>
+        <div className="flex-1">
+          <select
+            value={planType}
+            onChange={(event) => setPlanType(event.target.value as PlanType)}
+            className="h-11 w-full rounded-md border border-line px-3 outline-none focus:border-brand"
+          >
+            {Object.entries(planLabels).map(([value, label]) => (
+              <option key={value} value={value}>
+                {label}
+              </option>
+            ))}
+          </select>
+          <div className="mt-2 rounded-md bg-panel p-3 text-sm leading-6 text-muted">
+            <div className="font-medium text-ink">{planLabels[planType]}</div>
+            <div>{planDescriptions[planType].daily}</div>
+            <div>{planDescriptions[planType].total}</div>
+          </div>
+        </div>
         <button
           disabled={loading || !password}
           className="h-11 rounded-md bg-ink px-4 font-semibold text-white disabled:opacity-60"
@@ -445,7 +459,7 @@ export default function AdminPage() {
                       <div className="mt-1 max-w-[180px] text-xs text-muted">{item.freeze_reason}</div>
                     )}
                   </td>
-                  <td className="p-3">{item.plan_type}</td>
+                  <td className="p-3">{planLabels[item.plan_type]}</td>
                   <td className="p-3">
                     {item.used_minutes_today} / {item.daily_minutes - item.used_minutes_today}分钟
                   </td>
@@ -521,7 +535,11 @@ export default function AdminPage() {
                     </button>
                   </td>
                   <td className="p-3">{session.access_codes?.code ?? "-"}</td>
-                  <td className="p-3">{session.access_codes?.plan_type ?? "-"}</td>
+                  <td className="p-3">
+                    {session.access_codes?.plan_type
+                      ? planLabels[session.access_codes.plan_type as PlanType]
+                      : "-"}
+                  </td>
                   <td className="p-3">{formatDate(session.start_time)}</td>
                   <td className="p-3">{formatDate(session.end_time)}</td>
                   <td className="p-3">{session.duration_minutes ?? 0}</td>
@@ -546,7 +564,12 @@ export default function AdminPage() {
             {[
               ["session_id", overview.sessionDetail.session.id],
               ["访问码", overview.sessionDetail.session.access_codes?.code ?? "-"],
-              ["套餐", overview.sessionDetail.session.access_codes?.plan_type ?? "-"],
+              [
+                "套餐",
+                overview.sessionDetail.session.access_codes?.plan_type
+                  ? planLabels[overview.sessionDetail.session.access_codes.plan_type as PlanType]
+                  : "-"
+              ],
               ["总时长", `${overview.sessionDetail.session.duration_minutes ?? 0}分钟`],
               ["AI调用", `${overview.sessionDetail.session.ai_call_count ?? 0}次`],
               ["平均识别间隔", `${frequencyStats.average}秒`],
