@@ -41,9 +41,59 @@ const awayCorrectionTerms = [
   "人物",
   "上半身",
   "面部",
+  "人脸",
+  "头部",
+  "头肩",
+  "肩膀",
+  "手臂",
+  "双手",
+  "身体",
   "坐在",
   "镜头前",
   "画面中有人"
+];
+
+const personEvidenceTerms = [
+  "人物",
+  "人脸",
+  "头部",
+  "上半身",
+  "头肩",
+  "肩膀",
+  "手臂",
+  "双手",
+  "手部",
+  "身体",
+  "孩子",
+  "学生",
+  "有人",
+  "人在"
+];
+
+const noPersonTerms = [
+  "没有人",
+  "无人",
+  "未检测到人物",
+  "未见人物",
+  "未看到人物",
+  "没有看到人物",
+  "未检测到人",
+  "未看到人",
+  "画面中无人",
+  "座位空",
+  "空座位"
+];
+
+const studyObjectTerms = [
+  "桌面",
+  "书桌",
+  "纸",
+  "笔",
+  "作业本",
+  "书本",
+  "屏幕",
+  "学习用品",
+  "文具"
 ];
 
 const qwenPrompt = `你是儿童学习监督助手。
@@ -64,7 +114,10 @@ const qwenPrompt = `你是儿童学习监督助手。
 
 判断原则：
 检测到人物时，禁止返回 away。
-看到人脸或上半身时，presence=present。
+只有看到人物身体部位，才可以返回 presence=present，例如：人脸、头部、上半身、肩膀、手臂、双手、身体部分。
+如果只看到桌面、纸、笔、作业本、书本、屏幕、文具等学习用品，但没有看到任何人物身体部位，必须返回 presence=away，learning_state=unknown。
+不允许把桌面、书本、纸、笔、作业本、屏幕作为 presence=present 的证据。
+看到人脸、头部、上半身、肩膀、手臂、双手或身体部分时，presence=present。
 手托头、停笔思考、凝视桌面，优先 thinking。
 单次看向镜头，不能判定为走神。
 单次抬头，不能判定为走神。
@@ -72,16 +125,17 @@ const qwenPrompt = `你是儿童学习监督助手。
 宁可 unknown，不要把在位学生错误判定为离座或走神。
 
 第一层 presence 只能返回：
-present：检测到人脸、上半身、头肩区域，或人物仍在学习位置附近
-away：画面无人、座位空了、人物明显离开学习区域
+present：检测到人脸、头部、上半身、头肩区域、肩膀、手臂、双手或身体部分
+away：画面无人、座位空了、人物明显离开学习区域，或只看到学习用品但没有任何人物身体部位
 
 第二层 learning_state 只能返回：
-studying：看到写字、阅读、书桌、作业本、书本、键盘输入、学习工具
+studying：presence=present，且看到写字、阅读、作业本、书本、键盘输入或学习工具使用行为
 thinking：人在位置，手托头、停笔思考、凝视桌面、短暂发呆、数学题思考、阅读理解思考
 suspected_distracted：持续东张西望、持续看镜头、持续玩无关物品、持续偏离学习区域
 unknown：画面过近、仅有人脸、看不到桌面、看不到双手、看不到学习区域、光线差、遮挡严重
 
 如果 presence=away，learning_state 必须为 unknown。
+如果只看到学习用品但没有人，reason 必须写：画面中未检测到人物，仅看到桌面或学习用品。
 
 JSON格式：
 {
@@ -207,10 +261,25 @@ async function analyzeWithQwen(image: string) {
   const confidence = Math.min(1, Math.max(0, Number(parsed.confidence ?? 0.5)));
   let reason = String(parsed.reason ?? "Qwen-VL返回结果。").slice(0, 160);
 
-  if (presence === "away" && awayCorrectionTerms.some((term) => reason.includes(term))) {
+  const hasPersonEvidence = personEvidenceTerms.some((term) => reason.includes(term));
+  const hasNoPersonEvidence = noPersonTerms.some((term) => reason.includes(term));
+  const hasOnlyStudyObjects =
+    studyObjectTerms.some((term) => reason.includes(term)) && !hasPersonEvidence;
+
+  if (
+    presence === "away" &&
+    !hasNoPersonEvidence &&
+    awayCorrectionTerms.some((term) => reason.includes(term))
+  ) {
     presence = "present";
     learningState = "unknown";
     reason = `${reason} 系统修正：画面中有人，不能判定为离座。`;
+  }
+
+  if (presence === "present" && (hasNoPersonEvidence || hasOnlyStudyObjects)) {
+    presence = "away";
+    learningState = "unknown";
+    reason = "画面中未检测到人物，仅看到桌面或学习用品。";
   }
 
   if (presence === "away") {
