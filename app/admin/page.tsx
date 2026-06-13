@@ -26,6 +26,7 @@ type AdminSession = {
   focus_rate: number | null;
   report_level: string | null;
   status: string | null;
+  last_active_at?: string | null;
   access_codes?: { code?: string; plan_type?: string } | null;
 };
 
@@ -519,6 +520,7 @@ export default function AdminPage() {
                 <th className="p-3">plan_type</th>
                 <th className="p-3">start_time</th>
                 <th className="p-3">end_time</th>
+                <th className="p-3">last_active</th>
                 <th className="p-3">分钟</th>
                 <th className="p-3">AI次数</th>
                 <th className="p-3">成本</th>
@@ -543,12 +545,13 @@ export default function AdminPage() {
                   </td>
                   <td className="p-3">{formatDate(session.start_time)}</td>
                   <td className="p-3">{formatDate(session.end_time)}</td>
+                  <td className="p-3">{formatDate(session.last_active_at)}</td>
                   <td className="p-3">{session.duration_minutes ?? 0}</td>
                   <td className="p-3">{session.ai_call_count ?? 0}</td>
                   <td className="p-3">{session.estimated_cost ?? 0}</td>
                   <td className="p-3">{session.focus_rate ?? 0}%</td>
                   <td className="p-3">{session.report_level ?? "-"}</td>
-                  <td className="p-3">{session.status ?? "-"}</td>
+                  <td className="p-3">{sessionStatusLabel(session.status)}</td>
                 </tr>
               ))}
             </tbody>
@@ -571,6 +574,8 @@ export default function AdminPage() {
                   ? planLabels[overview.sessionDetail.session.access_codes.plan_type as PlanType]
                   : "-"
               ],
+              ["Session状态", sessionStatusLabel(overview.sessionDetail.session.status)],
+              ["最近心跳", formatDate(overview.sessionDetail.session.last_active_at)],
               ["总时长", `${overview.sessionDetail.session.duration_minutes ?? 0}分钟`],
               ["AI调用", `${overview.sessionDetail.session.ai_call_count ?? 0}次`],
               ["平均识别间隔", `${frequencyStats.average}秒`],
@@ -681,6 +686,16 @@ function LogSection({ title, rows }: { title: string; rows: AdminLog[] }) {
 function formatDate(value?: string | null) {
   if (!value) return "-";
   return new Date(value).toLocaleString("zh-CN");
+}
+
+function sessionStatusLabel(status?: string | null) {
+  const labels: Record<string, string> = {
+    active: "active",
+    completed: "completed",
+    expired: "expired",
+    ended: "completed"
+  };
+  return status ? labels[status] ?? status : "-";
 }
 
 function buildFrequencyStats(records: Array<{ current_frequency_seconds?: number | null }>) {

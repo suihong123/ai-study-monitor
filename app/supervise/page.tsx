@@ -98,6 +98,7 @@ export default function SupervisePage() {
   const [pageActive, setPageActive] = useState(true);
   const [lastReminder, setLastReminder] = useState<LastReminder | null>(null);
   const [placementConfirmed, setPlacementConfirmed] = useState(false);
+  const [needsRecoveryDecision, setNeedsRecoveryDecision] = useState(false);
 
   const elapsedMinutes = Math.floor(elapsedSeconds / 60);
   const todayRemainingMinutes = Math.max(
@@ -396,6 +397,27 @@ export default function SupervisePage() {
     [current]
   );
 
+  const sendHeartbeat = useCallback(async () => {
+    if (!current || finishingRef.current || !navigator.onLine) return;
+    try {
+      const response = await fetch("/api/session-heartbeat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          accessCodeId: current.accessCode.id,
+          sessionId: current.session.id,
+          sessionToken: current.session.session_token
+        })
+      });
+      if (!response.ok) {
+        const result = await response.json();
+        setCameraError(result.error ?? "会话已结束，请重新开始监督。");
+      }
+    } catch {
+      setCameraError("心跳同步失败，请检查网络。");
+    }
+  }, [current]);
+
   const finish = useCallback(async () => {
     if (!current || finishingRef.current) return;
     const activeSupervision = current;
@@ -445,7 +467,7 @@ export default function SupervisePage() {
           action: "finish-session",
           sessionId: activeSupervision.session.id,
           accessCodeId: activeSupervision.accessCode.id,
-          records: finalRecords,
+          ...(finalRecords.length > 0 ? { records: finalRecords } : {}),
           endTime,
           durationMinutes,
           aiCallCount: aiCallCountRef.current,
@@ -468,6 +490,12 @@ export default function SupervisePage() {
     const parsed = JSON.parse(raw) as CurrentSupervision;
     setCurrent(parsed);
     startedAtRef.current = new Date(parsed.session.start_time);
+    const seenKey = `supervision-seen-${parsed.session.id}`;
+    if (window.sessionStorage.getItem(seenKey) === "true") {
+      setNeedsRecoveryDecision(true);
+    } else {
+      window.sessionStorage.setItem(seenKey, "true");
+    }
     setPlacementConfirmed(
       window.sessionStorage.getItem(`placement-confirmed-${parsed.session.id}`) === "true"
     );
@@ -480,7 +508,7 @@ export default function SupervisePage() {
   }, [applyInterval, current, defaultIntervalForNow]);
 
   useEffect(() => {
-    if (!current || !placementConfirmed) return;
+    if (!current || !placementConfirmed || needsRecoveryDecision) return;
     let cancelled = false;
     const activeSupervision = current;
 
@@ -526,7 +554,7 @@ export default function SupervisePage() {
       }
       streamRef.current?.getTracks().forEach((track) => track.stop());
     };
-  }, [analyze, current, placementConfirmed]);
+  }, [analyze, current, needsRecoveryDecision, placementConfirmed]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -552,13 +580,20 @@ export default function SupervisePage() {
   }, []);
 
   useEffect(() => {
-    if (!current || !placementConfirmed || !pageActive || finishingRef.current) return;
+    if (!current || !placementConfirmed || needsRecoveryDecision || !pageActive || finishingRef.current) return;
     const timeout = window.setTimeout(
       () => void analyze(),
       currentIntervalSeconds * 1000
     );
     return () => window.clearTimeout(timeout);
-  }, [analyze, current, currentIntervalSeconds, pageActive, placementConfirmed, records.length]);
+  }, [analyze, current, currentIntervalSeconds, needsRecoveryDecision, pageActive, placementConfirmed, records.length]);
+
+  useEffect(() => {
+    if (!current || needsRecoveryDecision || !pageActive || finishingRef.current) return;
+    void sendHeartbeat();
+    const timer = window.setInterval(() => void sendHeartbeat(), 60_000);
+    return () => window.clearInterval(timer);
+  }, [current, needsRecoveryDecision, pageActive, sendHeartbeat]);
 
   useEffect(() => {
     if (!current || abnormalLockRef.current || Date.now() < intensityUntilRef.current) return;
@@ -750,7 +785,7 @@ export default function SupervisePage() {
           </div>
         </aside>
       </div>
-      {current && !placementConfirmed && (
+      {current && !placementConfirmed && !needsRecoveryDecision && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
           <div className="w-full max-w-lg rounded-md bg-white p-5 shadow-lg">
             <h2 className="text-xl font-semibold">手机摆放确认</h2>
@@ -784,6 +819,32 @@ export default function SupervisePage() {
                 className="h-11 rounded-md bg-brand px-4 font-semibold text-white"
               >
                 我已放好，开始监督
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {current && needsRecoveryDecision && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-md rounded-md bg-white p-5 shadow-lg">
+            <h2 className="text-xl font-semibold">检测到未结束监督</h2>
+            <p className="mt-3 text-sm leading-6 text-muted">
+              页面刷新前有一段监督尚未结束。你可以恢复监督继续记录，也可以立即结束并结算本次监督。
+            </p>
+            <div className="mt-5 flex flex-col gap-2 sm:flex-row">
+              <button
+                type="button"
+                onClick={() => setNeedsRecoveryDecision(false)}
+                className="h-11 rounded-md bg-brand px-4 font-semibold text-white"
+              >
+                恢复监督
+              </button>
+              <button
+                type="button"
+                onClick={() => void finish()}
+                className="h-11 rounded-md border border-line px-4 font-medium"
+              >
+                结束并结算
               </button>
             </div>
           </div>

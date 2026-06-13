@@ -71,9 +71,12 @@ create table if not exists sessions (
   estimated_cost numeric(10, 3),
   report_level text check (report_level in ('basic', 'standard', 'advanced')),
   session_token text,
-  status text not null default 'active',
+  status text not null default 'active' check (
+    status in ('active', 'completed', 'expired')
+  ),
   ip text,
   user_agent text,
+  last_active_at timestamptz default now(),
   created_at timestamptz not null default now()
 );
 

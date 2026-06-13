@@ -105,6 +105,7 @@ export type StudySession = {
   status: string | null;
   ip: string | null;
   user_agent: string | null;
+  last_active_at: string | null;
   created_at: string;
 };
 

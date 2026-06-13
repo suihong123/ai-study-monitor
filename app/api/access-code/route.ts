@@ -2,8 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 import { canUseAccessCode, statusMessages } from "@/lib/access-code-status";
 import { isAdminRequest } from "@/lib/admin";
 import { defaultPlanConfigs, getTodayKey, planTotalMinutes } from "@/lib/plans";
+import {
+  sessionTimeoutSeconds,
+  settleExpiredSessionsForAccessCode,
+  settleSession
+} from "@/lib/session-settlement";
 import { supabaseAdmin } from "@/lib/supabase/server";
-import { calculateStats, estimateCost } from "@/lib/stats";
 import {
   checkRateLimit,
   generateSessionToken,
@@ -15,19 +19,11 @@ import {
 } from "@/lib/security";
 import type {
   AccessCodeStatus,
-  LearningState,
   PlanConfig,
   PlanType,
   ReportLevel,
   StudyRecord,
-  StudyStatus
 } from "@/types";
-
-function legacyLearningStateFromStatus(status: StudyStatus): LearningState {
-  if (status === "studying") return "studying";
-  if (status === "distracted" || status === "unrelated") return "suspected_distracted";
-  return "unknown";
-}
 
 function missingSupabase() {
   return NextResponse.json(
@@ -218,13 +214,30 @@ async function handleValidateCode(request: NextRequest, code: string, deviceId: 
     );
   }
 
+  await settleExpiredSessionsForAccessCode(data.id);
+
+  const { data: refreshedCode, error: refreshError } = await supabaseAdmin!
+    .from("access_codes")
+    .select("*")
+    .eq("id", data.id)
+    .single();
+
+  if (refreshError) {
+    await logError({
+      accessCodeId: data.id,
+      errorType: "access_code验证失败",
+      errorMessage: refreshError.message
+    });
+    return NextResponse.json({ error: refreshError.message }, { status: 500 });
+  }
+
   const today = getTodayKey();
   const resetValues =
-    data.last_reset_date === today
+    refreshedCode.last_reset_date === today
       ? {}
       : { used_minutes_today: 0, last_reset_date: today };
   const normalizedCode = {
-    ...data,
+    ...refreshedCode,
     ...resetValues
   };
 
@@ -241,7 +254,10 @@ async function handleValidateCode(request: NextRequest, code: string, deviceId: 
       eventType: "额度不足仍继续调用",
       message: "总剩余时长不足"
     });
-    return NextResponse.json({ error: "总剩余时长不足" }, { status: 403 });
+    return NextResponse.json(
+      { error: normalizedCode.plan_type === "trial" ? "体验额度已用完" : "总剩余时长不足" },
+      { status: 403 }
+    );
   }
   if (todayRemainingMinutes <= 0) {
     await logSuspicious({
@@ -273,12 +289,45 @@ async function handleValidateCode(request: NextRequest, code: string, deviceId: 
     normalizedCode.device_id = normalizedCode.device_id ?? deviceId;
   }
 
+  const activeSince = new Date(Date.now() - sessionTimeoutSeconds * 1000).toISOString();
+  const { data: activeSession, error: activeSessionError } = await supabaseAdmin!
+    .from("sessions")
+    .select("*")
+    .eq("access_code_id", data.id)
+    .eq("status", "active")
+    .is("end_time", null)
+    .gte("last_active_at", activeSince)
+    .order("last_active_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (activeSessionError) {
+    await logError({
+      accessCodeId: data.id,
+      errorType: "access_code验证失败",
+      errorMessage: activeSessionError.message
+    });
+    return NextResponse.json({ error: activeSessionError.message }, { status: 500 });
+  }
+
+  if (activeSession) {
+    return NextResponse.json({
+      accessCode: normalizedCode,
+      session: activeSession,
+      totalRemainingMinutes,
+      todayRemainingMinutes,
+      recoverable: true
+    });
+  }
+
   const sessionToken = generateSessionToken();
+  const now = new Date().toISOString();
   const { data: session, error: sessionError } = await supabaseAdmin!
     .from("sessions")
     .insert({
       access_code_id: data.id,
-      start_time: new Date().toISOString(),
+      start_time: now,
+      last_active_at: now,
       report_level: normalizedCode.report_level,
       session_token: sessionToken,
       status: "active",
@@ -301,7 +350,8 @@ async function handleValidateCode(request: NextRequest, code: string, deviceId: 
     accessCode: normalizedCode,
     session,
     totalRemainingMinutes,
-    todayRemainingMinutes
+    todayRemainingMinutes,
+    recoverable: false
   });
 }
 
@@ -519,7 +569,7 @@ async function updatePlan(
 async function handleFinishSession(request: NextRequest, body: {
   sessionId: string;
   accessCodeId: string;
-  records: StudyRecord[];
+  records?: StudyRecord[];
   endTime: string;
   durationMinutes?: number;
   aiCallCount?: number;
@@ -536,135 +586,32 @@ async function handleFinishSession(request: NextRequest, body: {
   });
   if (!auth.ok) return auth.response;
 
-  const records = body.records ?? [];
-  const stats = calculateStats(records, body.durationMinutes);
-  const reportLevel = auth.context.accessCode.report_level;
-  const aiCallCount = body.aiCallCount ?? records.length;
-  const estimatedCost = estimateCost(aiCallCount, reportLevel);
+  const records = Array.isArray(body.records) ? body.records : undefined;
+  const result = await settleSession({
+    sessionId: body.sessionId,
+    accessCodeId: body.accessCodeId,
+    endTime: body.endTime,
+    durationMinutes: body.durationMinutes,
+    records,
+    aiCallCount: body.aiCallCount,
+    reportLevel: auth.context.accessCode.report_level,
+    status: "completed"
+  });
 
-  const unsavedRecords = records.filter((record) => !record.id);
-  const savedRecords = records.filter((record) => record.id);
-  if (savedRecords.length > 0) {
-    await Promise.all(
-      savedRecords.map((record) =>
-        supabaseAdmin!
-          .from("records")
-          .update({
-            presence: record.presence ?? (record.status === "away" ? "away" : "present"),
-            learning_state: record.learning_state ?? legacyLearningStateFromStatus(record.status),
-            current_frequency_seconds: record.current_frequency_seconds ?? null,
-            frequency_boosted_by_abnormal: record.frequency_boosted_by_abnormal ?? false,
-            frequency_lowered_by_focus: record.frequency_lowered_by_focus ?? false,
-            triggered_reminder: record.triggered_reminder ?? false,
-            reminder_type: record.reminder_type ?? null,
-            reminder_text: record.reminder_text ?? null,
-            error_message: record.error_message ?? null,
-            manual_corrected: record.manual_corrected ?? false,
-            correction_source: record.correction_source ?? null,
-            corrected_at: record.corrected_at ?? null
-          })
-          .eq("id", record.id)
-          .eq("session_id", body.sessionId)
-      )
-    );
-  }
-  if (unsavedRecords.length > 0) {
-    const { error: recordsError } = await supabaseAdmin!.from("records").insert(
-      unsavedRecords.map((record) => ({
-        session_id: body.sessionId,
-        status: record.status,
-        presence: record.presence ?? (record.status === "away" ? "away" : "present"),
-        learning_state: record.learning_state ?? legacyLearningStateFromStatus(record.status),
-        timestamp: record.timestamp,
-        confidence: record.confidence ?? null,
-        reason: record.reason ?? null,
-        analyze_mode: record.analyze_mode ?? "mock",
-        current_frequency_seconds: record.current_frequency_seconds ?? null,
-        frequency_boosted_by_abnormal: record.frequency_boosted_by_abnormal ?? false,
-        frequency_lowered_by_focus: record.frequency_lowered_by_focus ?? false,
-        triggered_reminder: record.triggered_reminder ?? false,
-        reminder_type: record.reminder_type ?? null,
-        reminder_text: record.reminder_text ?? null,
-        ai_called: record.ai_called ?? true,
-        error_message: record.error_message ?? null,
-        manual_corrected: record.manual_corrected ?? false,
-        correction_source: record.correction_source ?? null,
-        corrected_at: record.corrected_at ?? null
-      }))
-    );
-    if (recordsError) {
-      await logError({
-        sessionId: body.sessionId,
-        accessCodeId: body.accessCodeId,
-        errorType: "图片上传失败",
-        errorMessage: recordsError.message
-      });
-      return NextResponse.json({ error: recordsError.message }, { status: 500 });
-    }
-  }
-
-  const { error: sessionError } = await supabaseAdmin!
-    .from("sessions")
-    .update({
-      end_time: body.endTime,
-      duration_minutes: stats.totalMinutes,
-      focus_rate: stats.focusRate,
-      ai_call_count: aiCallCount,
-      estimated_cost: estimatedCost,
-      report_level: reportLevel,
-      session_token: null,
-      status: "ended"
-    })
-    .eq("id", body.sessionId);
-
-  if (sessionError) {
+  if (!result.ok) {
     await logError({
       sessionId: body.sessionId,
       accessCodeId: body.accessCodeId,
       errorType: "额度扣减失败",
-      errorMessage: sessionError.message
+      errorMessage: result.error
     });
-    return NextResponse.json({ error: sessionError.message }, { status: 500 });
+    return NextResponse.json({ error: result.error }, { status: 500 });
   }
 
-  const { data: accessCode, error: codeError } = await supabaseAdmin!
-    .from("access_codes")
-    .select("used_minutes, used_minutes_today, last_reset_date")
-    .eq("id", body.accessCodeId)
-    .single();
-
-  if (codeError) {
-    await logError({
-      sessionId: body.sessionId,
-      accessCodeId: body.accessCodeId,
-      errorType: "额度扣减失败",
-      errorMessage: codeError.message
-    });
-    return NextResponse.json({ error: codeError.message }, { status: 500 });
-  }
-
-  const today = getTodayKey();
-  const usedToday =
-    accessCode.last_reset_date === today ? accessCode.used_minutes_today : 0;
-
-  const { error: updateError } = await supabaseAdmin!
-    .from("access_codes")
-    .update({
-      used_minutes: accessCode.used_minutes + stats.totalMinutes,
-      used_minutes_today: usedToday + stats.totalMinutes,
-      last_reset_date: today
-    })
-    .eq("id", body.accessCodeId);
-
-  if (updateError) {
-    await logError({
-      sessionId: body.sessionId,
-      accessCodeId: body.accessCodeId,
-      errorType: "额度扣减失败",
-      errorMessage: updateError.message
-    });
-    return NextResponse.json({ error: updateError.message }, { status: 500 });
-  }
-
-  return NextResponse.json({ stats, aiCallCount, estimatedCost });
+  return NextResponse.json({
+    stats: result.stats,
+    aiCallCount: result.aiCallCount,
+    estimatedCost: result.estimatedCost,
+    skipped: result.skipped
+  });
 }

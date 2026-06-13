@@ -197,7 +197,13 @@ export async function validateSessionRequest(
     .eq("access_code_id", body.accessCodeId)
     .maybeSingle();
 
-  if (sessionError || !session || session.session_token !== body.sessionToken || session.end_time) {
+  if (
+    sessionError ||
+    !session ||
+    session.session_token !== body.sessionToken ||
+    session.end_time ||
+    session.status !== "active"
+  ) {
     await logSuspicious({
       accessCodeId: body.accessCodeId,
       ip,

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isAdminRequest } from "@/lib/admin";
 import { getTodayKey } from "@/lib/plans";
+import { settleExpiredSessions } from "@/lib/session-settlement";
 import { supabaseAdmin } from "@/lib/supabase/server";
 import { logError } from "@/lib/security";
 
@@ -19,6 +20,8 @@ export async function GET(request: NextRequest) {
   if (!supabaseAdmin) {
     return NextResponse.json({ error: "Supabase环境变量未配置" }, { status: 500 });
   }
+
+  await settleExpiredSessions();
 
   const since = todayStartIso();
   const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
