@@ -64,7 +64,8 @@ const angleWarningTerms = [
   "画面不清晰"
 ];
 
-const abnormalStatuses: StudyStatus[] = ["distracted", "unrelated", "lying", "away"];
+const abnormalStatuses: StudyStatus[] = ["distracted", "unrelated", "lying", "away", "unknown"];
+const maxAnalyzeIntervalSeconds = 300;
 
 type FrequencyReason = "normal" | "abnormal" | "focused";
 
@@ -96,6 +97,7 @@ export default function SupervisePage() {
   const [intensity, setIntensity] = useState<SupervisionIntensity>("standard");
   const [pageActive, setPageActive] = useState(true);
   const [lastReminder, setLastReminder] = useState<LastReminder | null>(null);
+  const [placementConfirmed, setPlacementConfirmed] = useState(false);
 
   const elapsedMinutes = Math.floor(elapsedSeconds / 60);
   const todayRemainingMinutes = Math.max(
@@ -135,9 +137,14 @@ export default function SupervisePage() {
     window.speechSynthesis.speak(utterance);
   }, []);
 
+  const testReminderSound = useCallback(() => {
+    speak("这是学习监督提醒声音，请确认音量合适。");
+  }, [speak]);
+
   const applyInterval = useCallback((nextInterval: number, reason: FrequencyReason) => {
-    setCurrentIntervalSeconds(nextInterval);
-    setIntensity(intensityFromInterval(nextInterval));
+    const boundedInterval = Math.min(nextInterval, maxAnalyzeIntervalSeconds);
+    setCurrentIntervalSeconds(boundedInterval);
+    setIntensity(intensityFromInterval(boundedInterval));
     frequencyReasonRef.current = reason;
   }, []);
 
@@ -169,7 +176,7 @@ export default function SupervisePage() {
     const consecutiveAbnormal =
       recentNormalCount === -1 ? nextRecords.length : recentNormalCount;
 
-    if (consecutiveStudying >= 8) {
+    if (consecutiveStudying >= 3) {
       intensityUntilRef.current = 0;
       abnormalLockRef.current = false;
       applyInterval(slowerInterval(defaultInterval), "focused");
@@ -248,7 +255,7 @@ export default function SupervisePage() {
   }, []);
 
   const analyze = useCallback(async () => {
-    if (!current || finishingRef.current || document.hidden || !navigator.onLine) return;
+    if (!current || !placementConfirmed || finishingRef.current || document.hidden || !navigator.onLine) return;
     const image = captureImage();
     if (!image || analyzingRef.current) return;
     const activeSupervision = current;
@@ -345,6 +352,7 @@ export default function SupervisePage() {
     currentIntervalSeconds,
     defaultIntervalForNow,
     maybeRemind,
+    placementConfirmed,
     updateDynamicInterval
   ]);
 
@@ -460,6 +468,9 @@ export default function SupervisePage() {
     const parsed = JSON.parse(raw) as CurrentSupervision;
     setCurrent(parsed);
     startedAtRef.current = new Date(parsed.session.start_time);
+    setPlacementConfirmed(
+      window.sessionStorage.getItem(`placement-confirmed-${parsed.session.id}`) === "true"
+    );
   }, [router]);
 
   useEffect(() => {
@@ -469,7 +480,7 @@ export default function SupervisePage() {
   }, [applyInterval, current, defaultIntervalForNow]);
 
   useEffect(() => {
-    if (!current) return;
+    if (!current || !placementConfirmed) return;
     let cancelled = false;
     const activeSupervision = current;
 
@@ -515,7 +526,7 @@ export default function SupervisePage() {
       }
       streamRef.current?.getTracks().forEach((track) => track.stop());
     };
-  }, [analyze, current]);
+  }, [analyze, current, placementConfirmed]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -541,13 +552,13 @@ export default function SupervisePage() {
   }, []);
 
   useEffect(() => {
-    if (!current || !pageActive || finishingRef.current) return;
+    if (!current || !placementConfirmed || !pageActive || finishingRef.current) return;
     const timeout = window.setTimeout(
       () => void analyze(),
       currentIntervalSeconds * 1000
     );
     return () => window.clearTimeout(timeout);
-  }, [analyze, current, currentIntervalSeconds, pageActive, records.length]);
+  }, [analyze, current, currentIntervalSeconds, pageActive, placementConfirmed, records.length]);
 
   useEffect(() => {
     if (!current || abnormalLockRef.current || Date.now() < intensityUntilRef.current) return;
@@ -569,6 +580,18 @@ export default function SupervisePage() {
         <div className="font-medium text-ink">最佳拍摄角度提示</div>
         <div className="mt-1">
           建议手机放置于孩子侧前方45°位置。确保能够看到：上半身、双手、桌面、作业区域。这样可提高识别准确率。
+        </div>
+        <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center">
+          <button
+            type="button"
+            onClick={testReminderSound}
+            className="w-fit rounded-md border border-line px-3 py-2 text-sm font-medium text-ink"
+          >
+            测试提醒声音
+          </button>
+          <span className="text-xs text-muted">
+            提醒声音会跟随手机或浏览器的系统音量，请提前调高设备音量。
+          </span>
         </div>
       </div>
       <div className="mb-4 rounded-md border border-blue-100 bg-blue-50 p-3 text-sm leading-6 text-muted">
@@ -727,6 +750,45 @@ export default function SupervisePage() {
           </div>
         </aside>
       </div>
+      {current && !placementConfirmed && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-lg rounded-md bg-white p-5 shadow-lg">
+            <h2 className="text-xl font-semibold">手机摆放确认</h2>
+            <p className="mt-3 text-sm leading-6 text-muted">
+              为了提高识别准确率，请将手机放在孩子侧前方约45°位置，并尽量拍到：
+            </p>
+            <ul className="mt-3 list-inside list-disc space-y-1 text-sm leading-6 text-muted">
+              <li>孩子上半身</li>
+              <li>双手</li>
+              <li>桌面</li>
+              <li>作业本/书本/屏幕</li>
+              <li>笔或文具</li>
+            </ul>
+            <div className="mt-4 rounded-md bg-panel p-3 text-xs leading-5 text-muted">
+              提醒声音会跟随手机或浏览器的系统音量，请提前调高设备音量。
+            </div>
+            <div className="mt-4 flex flex-col gap-2 sm:flex-row">
+              <button
+                type="button"
+                onClick={testReminderSound}
+                className="h-11 rounded-md border border-line px-4 font-medium"
+              >
+                测试提醒声音
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  window.sessionStorage.setItem(`placement-confirmed-${current.session.id}`, "true");
+                  setPlacementConfirmed(true);
+                }}
+                className="h-11 rounded-md bg-brand px-4 font-semibold text-white"
+              >
+                我已放好，开始监督
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }

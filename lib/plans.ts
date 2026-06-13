@@ -3,12 +3,12 @@ import type { PlanConfig, PlanType } from "@/types";
 export const defaultPlanConfigs: Record<PlanType, Omit<PlanConfig, "id" | "created_at">> = {
   trial: {
     plan_type: "trial",
-    name: "体验版",
+    name: "2小时体验版",
     daily_minutes: 120,
     base_interval_seconds: 90,
     min_interval_seconds: 60,
     report_level: "basic",
-    price_suggest: "体验"
+    price_suggest: "适合首次体验"
   },
   basic_monthly: {
     plan_type: "basic_monthly",

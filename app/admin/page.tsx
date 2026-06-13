@@ -96,17 +96,17 @@ type AdminOverview = {
 };
 
 const planLabels: Record<PlanType, string> = {
-  trial: "3天体验版",
+  trial: "2小时体验版",
   basic_monthly: "月卡（30天）",
   standard_monthly: "季卡（90天）",
   pro_monthly: "年卡（365天）"
 };
 
-const planDescriptions: Record<PlanType, { daily: string; total: string }> = {
-  trial: { daily: "每日60分钟", total: "总额度180分钟" },
-  basic_monthly: { daily: "每日180分钟", total: "总额度5400分钟" },
-  standard_monthly: { daily: "每日180分钟", total: "总额度16200分钟" },
-  pro_monthly: { daily: "每日180分钟", total: "总额度65700分钟" }
+const planDescriptions: Record<PlanType, string[]> = {
+  trial: ["总额度120分钟", "适合首次体验"],
+  basic_monthly: ["每日180分钟", "总额度5400分钟"],
+  standard_monthly: ["每日180分钟", "总额度16200分钟"],
+  pro_monthly: ["每日180分钟", "总额度65700分钟"]
 };
 
 const dashboardLabels: Record<string, string> = {
@@ -388,8 +388,9 @@ export default function AdminPage() {
           </select>
           <div className="mt-2 rounded-md bg-panel p-3 text-sm leading-6 text-muted">
             <div className="font-medium text-ink">{planLabels[planType]}</div>
-            <div>{planDescriptions[planType].daily}</div>
-            <div>{planDescriptions[planType].total}</div>
+            {planDescriptions[planType].map((line) => (
+              <div key={line}>{line}</div>
+            ))}
           </div>
         </div>
         <button
