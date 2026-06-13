@@ -99,6 +99,7 @@ export default function SupervisePage() {
   const [lastReminder, setLastReminder] = useState<LastReminder | null>(null);
   const [placementConfirmed, setPlacementConfirmed] = useState(false);
   const [needsRecoveryDecision, setNeedsRecoveryDecision] = useState(false);
+  const [audioTestMessage, setAudioTestMessage] = useState("");
 
   const elapsedMinutes = Math.floor(elapsedSeconds / 60);
   const todayRemainingMinutes = Math.max(
@@ -139,8 +140,53 @@ export default function SupervisePage() {
   }, []);
 
   const testReminderSound = useCallback(() => {
-    speak("这是学习监督提醒声音，请确认音量合适。");
-  }, [speak]);
+    console.info("[提醒声音测试] 开始加载音频");
+    console.info("[提醒声音测试] 当前实现使用 speechSynthesis，不调用 audio.play()，也不加载音频文件。");
+    setAudioTestMessage("");
+
+    if (!("speechSynthesis" in window)) {
+      const message = "检测到浏览器不支持语音播放，请更换浏览器后重试。";
+      console.error("[提醒声音测试] 播放失败", message);
+      setAudioTestMessage(message);
+      return;
+    }
+
+    let started = false;
+    const utterance = new SpeechSynthesisUtterance("这是学习监督提醒声音，请确认音量合适。");
+    utterance.lang = "zh-CN";
+    utterance.rate = 0.95;
+    utterance.onstart = () => {
+      started = true;
+      console.info("[提醒声音测试] 音频加载成功");
+      console.info("[提醒声音测试] 开始播放");
+    };
+    utterance.onend = () => {
+      console.info("[提醒声音测试] 播放完成");
+      setAudioTestMessage("测试声音已播放，请确认手机音量合适。");
+    };
+    utterance.onerror = (event) => {
+      const message = "检测到浏览器禁止自动播放或设备静音，请提高系统音量后重试。";
+      console.error("[提醒声音测试] 播放失败", event);
+      console.error("[提醒声音测试] 错误原因", event.error);
+      setAudioTestMessage(message);
+    };
+
+    try {
+      window.speechSynthesis.cancel();
+      window.speechSynthesis.speak(utterance);
+      window.setTimeout(() => {
+        if (!started) {
+          console.warn("[提醒声音测试] 尚未收到开始播放事件，可能被浏览器、系统静音或音量设置拦截。");
+          setAudioTestMessage("检测到浏览器禁止自动播放或设备静音，请提高系统音量后重试。");
+        }
+      }, 2000);
+    } catch (error) {
+      const message = "检测到浏览器禁止自动播放或设备静音，请提高系统音量后重试。";
+      console.error("[提醒声音测试] 播放失败", error);
+      console.error("[提醒声音测试] 错误原因", error);
+      setAudioTestMessage(message);
+    }
+  }, []);
 
   const applyInterval = useCallback((nextInterval: number, reason: FrequencyReason) => {
     const boundedInterval = Math.min(nextInterval, maxAnalyzeIntervalSeconds);
@@ -628,6 +674,11 @@ export default function SupervisePage() {
             提醒声音会跟随手机或浏览器的系统音量，请提前调高设备音量。
           </span>
         </div>
+        {audioTestMessage && (
+          <div className="mt-2 rounded-md bg-panel p-2 text-xs text-muted">
+            {audioTestMessage}
+          </div>
+        )}
       </div>
       <div className="mb-4 rounded-md border border-blue-100 bg-blue-50 p-3 text-sm leading-6 text-muted">
         学习过程会自动生成报告，包括专注时长、疑似分心、离座和提醒记录。
@@ -802,6 +853,11 @@ export default function SupervisePage() {
             <div className="mt-4 rounded-md bg-panel p-3 text-xs leading-5 text-muted">
               提醒声音会跟随手机或浏览器的系统音量，请提前调高设备音量。
             </div>
+            {audioTestMessage && (
+              <div className="mt-3 rounded-md bg-panel p-3 text-xs leading-5 text-muted">
+                {audioTestMessage}
+              </div>
+            )}
             <div className="mt-4 flex flex-col gap-2 sm:flex-row">
               <button
                 type="button"
