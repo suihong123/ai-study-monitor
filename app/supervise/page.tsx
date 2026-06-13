@@ -72,6 +72,9 @@ type WakeLockSentinel = {
   release: () => Promise<void>;
   addEventListener: (type: "release", listener: () => void) => void;
 };
+type WebAudioWindow = Window & {
+  webkitAudioContext?: typeof AudioContext;
+};
 
 export default function SupervisePage() {
   const router = useRouter();
@@ -136,63 +139,97 @@ export default function SupervisePage() {
       )
     : 0;
 
-  const speak = useCallback((text: string) => {
-    if (!("speechSynthesis" in window)) return;
-    window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = "zh-CN";
-    utterance.rate = 0.95;
-    window.speechSynthesis.speak(utterance);
-  }, []);
-
-  const testReminderSound = useCallback(() => {
-    console.info("[提醒声音测试] 开始加载音频");
-    console.info("[提醒声音测试] 当前实现使用 speechSynthesis，不调用 audio.play()，也不加载音频文件。");
-    setAudioTestMessage("");
-
-    if (!("speechSynthesis" in window)) {
-      const message = "检测到浏览器不支持语音播放，请更换浏览器后重试。";
-      console.error("[提醒声音测试] 播放失败", message);
-      setAudioTestMessage(message);
-      return;
+  const playBeep = useCallback(async () => {
+    const AudioContextClass =
+      window.AudioContext ?? (window as WebAudioWindow).webkitAudioContext;
+    if (!AudioContextClass) {
+      return false;
     }
 
-    let started = false;
-    const utterance = new SpeechSynthesisUtterance("这是学习监督提醒声音，请确认音量合适。");
-    utterance.lang = "zh-CN";
-    utterance.rate = 0.95;
-    utterance.onstart = () => {
-      started = true;
-      console.info("[提醒声音测试] 音频加载成功");
-      console.info("[提醒声音测试] 开始播放");
-    };
-    utterance.onend = () => {
-      console.info("[提醒声音测试] 播放完成");
-      setAudioTestMessage("测试声音已播放，请确认手机音量合适。");
-    };
-    utterance.onerror = (event) => {
-      const message = "检测到浏览器禁止自动播放或设备静音，请提高系统音量后重试。";
-      console.error("[提醒声音测试] 播放失败", event);
-      console.error("[提醒声音测试] 错误原因", event.error);
-      setAudioTestMessage(message);
-    };
+    const audioContext = new AudioContextClass();
+    const oscillator = audioContext.createOscillator();
+    const gain = audioContext.createGain();
+    const now = audioContext.currentTime;
+
+    oscillator.type = "sine";
+    oscillator.frequency.setValueAtTime(660, now);
+    oscillator.frequency.exponentialRampToValueAtTime(520, now + 0.35);
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(0.18, now + 0.03);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.42);
+
+    oscillator.connect(gain);
+    gain.connect(audioContext.destination);
+
+    if (audioContext.state === "suspended") {
+      await audioContext.resume();
+    }
+
+    oscillator.start(now);
+    oscillator.stop(now + 0.45);
+
+    await new Promise<void>((resolve) => {
+      oscillator.onended = () => {
+        void audioContext.close();
+        resolve();
+      };
+    });
+
+    return true;
+  }, []);
+
+  const speak = useCallback((text: string) => {
+    if (!("speechSynthesis" in window)) {
+      return false;
+    }
 
     try {
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.lang = "zh-CN";
+      utterance.rate = 0.95;
       window.speechSynthesis.cancel();
       window.speechSynthesis.speak(utterance);
-      window.setTimeout(() => {
-        if (!started) {
-          console.warn("[提醒声音测试] 尚未收到开始播放事件，可能被浏览器、系统静音或音量设置拦截。");
-          setAudioTestMessage("检测到浏览器禁止自动播放或设备静音，请提高系统音量后重试。");
-        }
-      }, 2000);
+      return true;
     } catch (error) {
-      const message = "检测到浏览器禁止自动播放或设备静音，请提高系统音量后重试。";
-      console.error("[提醒声音测试] 播放失败", error);
-      console.error("[提醒声音测试] 错误原因", error);
-      setAudioTestMessage(message);
+      console.error("[提醒声音] speechSynthesis 播放失败", error);
+      return false;
     }
   }, []);
+
+  const playReminderAudio = useCallback(async (text: string) => {
+    const beepPlayed = await playBeep();
+    speak(text);
+    return beepPlayed;
+  }, [playBeep, speak]);
+
+  const testReminderSound = useCallback(async () => {
+    console.info("[提醒声音测试] 开始播放 beep 提示音");
+    setAudioTestMessage("");
+
+    try {
+      const beepPlayed = await playBeep();
+      if (!beepPlayed) {
+        const message = "当前浏览器不支持提示音播放，请更换浏览器或调高系统音量。";
+        console.error("[提醒声音测试] Web Audio API 不支持");
+        setAudioTestMessage(message);
+        speak("这是学习监督提醒声音，请确认音量合适。");
+        return;
+      }
+
+      console.info("[提醒声音测试] beep 播放成功");
+      const speechStarted = speak("这是学习监督提醒声音，请确认音量合适。");
+      console.info(
+        speechStarted
+          ? "[提醒声音测试] 已尝试 speechSynthesis 朗读"
+          : "[提醒声音测试] speechSynthesis 不可用，仅播放 beep"
+      );
+      setAudioTestMessage("测试提示音已播放，请确认手机音量合适。");
+    } catch (error) {
+      console.error("[提醒声音测试] beep 播放失败", error);
+      setAudioTestMessage("检测到浏览器禁止自动播放或设备静音，请提高系统音量后重试。");
+      speak("这是学习监督提醒声音，请确认音量合适。");
+    }
+  }, [playBeep, speak]);
 
   const applyInterval = useCallback((nextInterval: number, reason: FrequencyReason) => {
     const boundedInterval = Math.min(nextInterval, maxAnalyzeIntervalSeconds);
@@ -280,7 +317,7 @@ export default function SupervisePage() {
           ? firstReminderTexts[latestReminderType]
           : repeatReminderTexts[latestReminderType];
 
-      speak(text);
+      void playReminderAudio(text);
       lastReminderAtRef.current[latestReminderType] = Date.now();
       reminderCountByTypeRef.current[latestReminderType] = reminderCount + 1;
       const reminder = {
@@ -291,7 +328,7 @@ export default function SupervisePage() {
       setLastReminder(reminder);
       return reminder;
     },
-    [speak]
+    [playReminderAudio]
   );
 
   const captureImage = useCallback(() => {
@@ -719,7 +756,7 @@ export default function SupervisePage() {
             测试提醒声音
           </button>
           <span className="text-xs text-muted">
-            提醒声音会跟随手机或浏览器的系统音量，请提前调高设备音量。
+            提醒声音会跟随手机或浏览器音量。请关闭静音模式，并把媒体音量调高。
           </span>
         </div>
         {audioTestMessage && (
@@ -904,7 +941,7 @@ export default function SupervisePage() {
               <li>笔或文具</li>
             </ul>
             <div className="mt-4 rounded-md bg-panel p-3 text-xs leading-5 text-muted">
-              提醒声音会跟随手机或浏览器的系统音量，请提前调高设备音量。
+              提醒声音会跟随手机或浏览器音量。请关闭静音模式，并把媒体音量调高。
             </div>
             {audioTestMessage && (
               <div className="mt-3 rounded-md bg-panel p-3 text-xs leading-5 text-muted">
