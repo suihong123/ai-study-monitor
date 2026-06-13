@@ -11,11 +11,8 @@ import type { LearningState, Presence, StudyStatus } from "@/types";
 
 const statusWeights: Array<{ status: StudyStatus; weight: number; reason: string }> = [
   { status: "studying", weight: 70, reason: "模拟结果：孩子保持学习状态。" },
-  { status: "distracted", weight: 15, reason: "模拟结果：疑似注意力偏离。" },
-  { status: "unknown", weight: 5, reason: "模拟结果：画面信息不足，无法稳定判断。" },
-  { status: "away", weight: 5, reason: "模拟结果：疑似离开座位。" },
-  { status: "unrelated", weight: 3, reason: "模拟结果：疑似接触无关物品。" },
-  { status: "lying", weight: 2, reason: "模拟结果：疑似趴桌或疲劳。" }
+  { status: "unknown", weight: 20, reason: "模拟结果：证据不足，无法确认正在学习。" },
+  { status: "away", weight: 10, reason: "模拟结果：疑似离开座位。" }
 ];
 
 const recentStatuses = new Map<string, StudyStatus[]>();
@@ -32,9 +29,7 @@ const validStatuses: StudyStatus[] = [
 const validPresence: Presence[] = ["present", "away"];
 const validLearningStates: LearningState[] = [
   "studying",
-  "thinking",
-  "suspected_distracted",
-  "unknown"
+  "uncertain"
 ];
 
 const awayCorrectionTerms = [
@@ -98,12 +93,11 @@ const studyObjectTerms = [
 
 const qwenPrompt = `你是儿童学习监督助手。
 
-你的任务不是寻找走神证据，而是优先判断：
+你的任务不是寻找走神证据，也不要判断孩子是否发呆。只判断：
 
-1. 人是否仍在学习位置
+1. 画面中是否有人
 2. 是否存在明确学习行为
-3. 是否只是思考状态
-4. 是否真的出现持续分心
+3. 如果证据不足，统一返回 uncertain
 
 仅判断当前可见行为。
 
@@ -115,14 +109,14 @@ const qwenPrompt = `你是儿童学习监督助手。
 判断原则：
 检测到人物时，禁止返回 away。
 只有看到人物身体部位，才可以返回 presence=present，例如：人脸、头部、上半身、肩膀、手臂、双手、身体部分。
-如果只看到桌面、纸、笔、作业本、书本、屏幕、文具等学习用品，但没有看到任何人物身体部位，必须返回 presence=away，learning_state=unknown。
+如果只看到桌面、纸、笔、作业本、书本、屏幕、文具等学习用品，但没有看到任何人物身体部位，必须返回 presence=away，learning_state=uncertain。
 不允许把桌面、书本、纸、笔、作业本、屏幕作为 presence=present 的证据。
 看到人脸、头部、上半身、肩膀、手臂、双手或身体部分时，presence=present。
-手托头、停笔思考、凝视桌面，优先 thinking。
-单次看向镜头，不能判定为走神。
-单次抬头，不能判定为走神。
-缺少桌面、双手、作业本等关键信息，优先 unknown。
-宁可 unknown，不要把在位学生错误判定为离座或走神。
+手托头、看镜头、停笔、抬头、发呆、身体部分被遮挡、无法确认正在学习，统一返回 learning_state=uncertain。
+不要返回 thinking。
+不要返回 suspected_distracted。
+不要主动判断走神。
+宁可 uncertain，不要给孩子贴走神标签。
 
 第一层 presence 只能返回：
 present：检测到人脸、头部、上半身、头肩区域、肩膀、手臂、双手或身体部分
@@ -130,19 +124,17 @@ away：画面无人、座位空了、人物明显离开学习区域，或只看�
 
 第二层 learning_state 只能返回：
 studying：presence=present，且看到写字、阅读、作业本、书本、键盘输入或学习工具使用行为
-thinking：人在位置，手托头、停笔思考、凝视桌面、短暂发呆、数学题思考、阅读理解思考
-suspected_distracted：持续东张西望、持续看镜头、持续玩无关物品、持续偏离学习区域
-unknown：画面过近、仅有人脸、看不到桌面、看不到双手、看不到学习区域、光线差、遮挡严重
+uncertain：presence=present，但没有明确学习行为证据，包括手托头、看镜头、停笔、抬头、发呆、遮挡或画面信息不足
 
-如果 presence=away，learning_state 必须为 unknown。
+如果 presence=away，learning_state 必须为 uncertain。
 如果只看到学习用品但没有人，reason 必须写：画面中未检测到人物，仅看到桌面或学习用品。
 
 JSON格式：
 {
   "presence": "present",
-  "learning_state": "thinking",
+  "learning_state": "uncertain",
   "confidence": 0.85,
-  "reason": "人物仍在座位上，手托头，未见玩手机或离座行为，可能处于思考状态。"
+  "reason": "人物仍在座位上，但未见明确写字、阅读或学习操作，证据不足。"
 }
 
 不要返回其它内容。`;
@@ -272,18 +264,18 @@ async function analyzeWithQwen(image: string) {
     awayCorrectionTerms.some((term) => reason.includes(term))
   ) {
     presence = "present";
-    learningState = "unknown";
+    learningState = "uncertain";
     reason = `${reason} 系统修正：画面中有人，不能判定为离座。`;
   }
 
   if (presence === "present" && (hasNoPersonEvidence || hasOnlyStudyObjects)) {
     presence = "away";
-    learningState = "unknown";
+    learningState = "uncertain";
     reason = "画面中未检测到人物，仅看到桌面或学习用品。";
   }
 
   if (presence === "away") {
-    learningState = "unknown";
+    learningState = "uncertain";
   }
 
   return {
@@ -297,14 +289,12 @@ async function analyzeWithQwen(image: string) {
 
 function legacyLearningStateFromStatus(status: unknown): LearningState {
   if (status === "studying") return "studying";
-  if (status === "distracted" || status === "unrelated") return "suspected_distracted";
-  return "unknown";
+  return "uncertain";
 }
 
 function legacyStatusFromState(presence: Presence, learningState: LearningState): StudyStatus {
   if (presence === "away") return "away";
-  if (learningState === "studying" || learningState === "thinking") return "studying";
-  if (learningState === "suspected_distracted") return "distracted";
+  if (learningState === "studying") return "studying";
   return "unknown";
 }
 

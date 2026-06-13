@@ -8,25 +8,24 @@ export function calculateStats(records: StudyRecord[], durationMinutes?: number)
     normalized.filter((record) => record.learningState === state && record.presence === "present").length;
   const countAway = () => normalized.filter((record) => record.presence === "away").length;
   const studyingCount = countLearning("studying");
-  const thinkingCount = countLearning("thinking");
-  const effectiveCount = studyingCount + thinkingCount;
+  const uncertainCount = countLearning("uncertain");
+  const thinkingCount = 0;
+  const effectiveCount = studyingCount;
   const totalMinutes = durationMinutes ?? total;
   const focusRate = total === 0 ? 0 : Math.round((effectiveCount / total) * 100);
 
-  const suspectedDistractedCount = countLearning("suspected_distracted");
-  const distractedCount = suspectedDistractedCount;
+  const suspectedDistractedCount = 0;
+  const distractedCount = 0;
   const awayCount = countAway();
-  const lyingCount = records.filter((record) => !record.learning_state && record.status === "lying").length;
-  const unrelatedCount = records.filter((record) => !record.learning_state && record.status === "unrelated").length;
-  const unknownCount = normalized.filter(
-    (record) => record.presence === "present" && record.learningState === "unknown"
-  ).length;
+  const lyingCount = 0;
+  const unrelatedCount = 0;
+  const unknownCount = uncertainCount;
   let longestStudyingStreak = 0;
   let currentStudyingStreak = 0;
   normalized.forEach((record) => {
     if (
       record.presence === "present" &&
-      (record.learningState === "studying" || record.learningState === "thinking")
+      record.learningState === "studying"
     ) {
       currentStudyingStreak += 1;
       longestStudyingStreak = Math.max(longestStudyingStreak, currentStudyingStreak);
@@ -40,6 +39,7 @@ export function calculateStats(records: StudyRecord[], durationMinutes?: number)
     effectiveMinutes: total === 0 ? 0 : Math.round((totalMinutes * effectiveCount) / total),
     focusRate,
     studyingCount,
+    uncertainCount,
     thinkingCount,
     suspectedDistractedCount,
     distractedCount,
@@ -47,7 +47,7 @@ export function calculateStats(records: StudyRecord[], durationMinutes?: number)
     lyingCount,
     unrelatedCount,
     unknownCount,
-    abnormalCount: distractedCount + awayCount + lyingCount + unrelatedCount,
+    abnormalCount: awayCount,
     reminderCount: records.filter((record) => record.triggered_reminder).length,
     longestFocusMinutes: longestStudyingStreak
   };
@@ -60,7 +60,7 @@ export function normalizeRecordState(record: StudyRecord): {
   if (record.presence && record.learning_state) {
     return {
       presence: record.presence,
-      learningState: record.learning_state
+      learningState: record.learning_state === "studying" ? "studying" : "uncertain"
     };
   }
 
@@ -68,12 +68,12 @@ export function normalizeRecordState(record: StudyRecord): {
     return { presence: "present", learningState: "studying" };
   }
   if (record.status === "distracted" || record.status === "unrelated") {
-    return { presence: "present", learningState: "suspected_distracted" };
+    return { presence: "present", learningState: "uncertain" };
   }
   if (record.status === "away") {
-    return { presence: "away", learningState: "unknown" };
+    return { presence: "away", learningState: "uncertain" };
   }
-  return { presence: "present", learningState: "unknown" };
+  return { presence: "present", learningState: "uncertain" };
 }
 
 export function calculateLearningInsights(records: StudyRecord[], durationMinutes?: number) {
@@ -81,25 +81,23 @@ export function calculateLearningInsights(records: StudyRecord[], durationMinute
   const studyingCount = normalized.filter(
     (record) => record.presence === "present" && record.learningState === "studying"
   ).length;
-  const thinkingCount = normalized.filter(
-    (record) => record.presence === "present" && record.learningState === "thinking"
+  const uncertainCount = normalized.filter(
+    (record) => record.presence === "present" && record.learningState === "uncertain"
   ).length;
-  const distractedCount = normalized.filter(
-    (record) => record.presence === "present" && record.learningState === "suspected_distracted"
-  ).length;
+  const thinkingCount = 0;
+  const distractedCount = 0;
   const awayCount = normalized.filter((record) => record.presence === "away").length;
-  const unknownCount = normalized.filter(
-    (record) => record.presence === "present" && record.learningState === "unknown"
-  ).length;
-  const accountableCount = studyingCount + thinkingCount + distractedCount + awayCount;
+  const unknownCount = uncertainCount;
+  const accountableCount = studyingCount + uncertainCount + awayCount;
   const focusRate =
     accountableCount === 0
       ? 0
-      : Math.round(((studyingCount + thinkingCount) / accountableCount) * 100);
+      : Math.round((studyingCount / accountableCount) * 100);
   const baseMinutes = durationMinutes ?? accountableCount;
 
   return {
     studyingCount,
+    uncertainCount,
     thinkingCount,
     distractedCount,
     awayCount,
@@ -109,12 +107,14 @@ export function calculateLearningInsights(records: StudyRecord[], durationMinute
     grade: learningGrade(focusRate),
     gradeText: learningGradeText(focusRate),
     studyingPercent: percentage(studyingCount, accountableCount),
-    thinkingPercent: percentage(thinkingCount, accountableCount),
+    uncertainPercent: percentage(uncertainCount, accountableCount),
+    thinkingPercent: 0,
     distractedPercent: percentage(distractedCount, accountableCount),
     awayPercent: percentage(awayCount, accountableCount),
     studyingMinutes: estimatedMinutes(studyingCount, accountableCount, baseMinutes),
-    thinkingMinutes: estimatedMinutes(thinkingCount, accountableCount, baseMinutes),
-    abnormalMinutes: estimatedMinutes(distractedCount + awayCount, accountableCount, baseMinutes)
+    uncertainMinutes: estimatedMinutes(uncertainCount, accountableCount, baseMinutes),
+    thinkingMinutes: 0,
+    abnormalMinutes: estimatedMinutes(awayCount, accountableCount, baseMinutes)
   };
 }
 
@@ -136,10 +136,10 @@ function learningGrade(focusRate: number) {
 
 function learningGradeText(focusRate: number) {
   if (focusRate >= 90) return "专注表现优秀";
-  if (focusRate >= 80) return "整体表现良好，偶尔出现分心";
-  if (focusRate >= 70) return "存在一定分心情况，建议保持连续专注";
-  if (focusRate >= 60) return "专注度偏低，建议减少干扰";
-  return "离座或分心较多，建议加强学习管理";
+  if (focusRate >= 80) return "整体表现良好";
+  if (focusRate >= 70) return "学习状态基本稳定";
+  if (focusRate >= 60) return "学习证据偏少，建议优化拍摄角度";
+  return "离座或证据不足较多，建议关注学习过程";
 }
 
 export function formatMinutes(minutes: number) {

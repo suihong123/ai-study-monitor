@@ -32,28 +32,26 @@ type LastReminder = {
 };
 
 const reminderLabels: Record<ReminderType, string> = {
-  suspected_distracted: "疑似走神提醒",
+  uncertain: "学习提醒",
   away: "离座提醒"
 };
 
 const firstReminderTexts: Record<ReminderType, string> = {
-  suspected_distracted: "先回到当前题目，继续专注一下。本次分心情况会记录到学习报告里。",
-  away: "请回到座位，继续完成学习任务。本次离座情况会记录到学习报告里。"
+  uncertain: "加油哦，继续完成当前任务吧。",
+  away: "请回到座位继续学习。本次离座情况会记录到学习报告中。"
 };
 
 const repeatReminderTexts: Record<ReminderType, string> = {
-  suspected_distracted: "已经多次检测到疑似分心，系统会整理到本次学习报告中，请先完成当前任务。",
-  away: "已经多次检测到离座，系统会整理到本次学习报告中，请回到座位继续学习。"
+  uncertain: "别忘了手上的题目哦。",
+  away: "请回到座位继续学习。本次离座情况会记录到学习报告中。"
 };
 
 const reminderCooldownMs = 3 * 60 * 1000;
 
 const correctionButtons: Array<{ status: StudyStatus; label: string }> = [
   { status: "studying", label: "我在学习" },
-  { status: "distracted", label: "我走神了" },
-  { status: "away", label: "我离座了" },
-  { status: "lying", label: "我趴桌了" },
-  { status: "unrelated", label: "我在玩无关物品" }
+  { status: "unknown", label: "证据不足" },
+  { status: "away", label: "我离座了" }
 ];
 
 const angleWarningTerms = [
@@ -149,7 +147,7 @@ export default function SupervisePage() {
   const [current, setCurrent] = useState<CurrentSupervision | null>(null);
   const [status, setStatus] = useState<StudyStatus>("unknown");
   const [presence, setPresence] = useState<Presence>("present");
-  const [learningState, setLearningState] = useState<LearningState>("unknown");
+  const [learningState, setLearningState] = useState<LearningState>("uncertain");
   const [records, setRecords] = useState<StudyRecord[]>([]);
   const [cameraError, setCameraError] = useState("");
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
@@ -181,7 +179,7 @@ export default function SupervisePage() {
   );
   const latestRecord = records[records.length - 1];
   const shouldShowAngleWarning =
-    latestRecord?.learning_state === "unknown" ||
+    latestRecord?.learning_state === "uncertain" ||
     (latestRecord?.status === "unknown" &&
       angleWarningTerms.some((term) => latestRecord.reason?.includes(term)));
   const reminderCooldownRemainingMinutes = lastReminder
@@ -877,7 +875,7 @@ export default function SupervisePage() {
         )}
       </div>
       <div className="mb-4 rounded-md border border-blue-100 bg-blue-50 p-3 text-sm leading-6 text-muted">
-        学习过程会自动生成报告，包括专注时长、疑似分心、离座和提醒记录。
+        学习过程会自动生成报告，包括学习时长、证据不足、离座和提醒记录。
       </div>
       <div className="mb-4 flex items-center justify-between gap-3">
         <div>
@@ -902,7 +900,7 @@ export default function SupervisePage() {
           )}
           {shouldShowAngleWarning && (
             <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm leading-6 text-warn">
-              <div className="font-medium">当前画面无法判断，请调整手机角度。</div>
+              <div className="font-medium">当前画面证据不足，请调整手机角度。</div>
               <div className="mt-1">建议调整手机位置，让画面同时看到：</div>
               <ul className="mt-1 list-inside list-disc">
                 <li>孩子上半身</li>
@@ -968,19 +966,18 @@ export default function SupervisePage() {
             <div className="text-sm font-medium">学习时长拆分</div>
             <div className="mt-3 grid grid-cols-3 gap-2 text-sm">
               <MetricPill label="有效学习" value={`${learningInsights.studyingMinutes}分钟`} />
-              <MetricPill label="思考时长" value={`${learningInsights.thinkingMinutes}分钟`} />
-              <MetricPill label="异常时长" value={`${learningInsights.abnormalMinutes}分钟`} />
+              <MetricPill label="证据不足" value={`${learningInsights.uncertainMinutes}分钟`} />
+              <MetricPill label="离座时长" value={`${learningInsights.abnormalMinutes}分钟`} />
             </div>
             <div className="mt-3 text-xs leading-5 text-muted">
-              学习时长根据AI识别结果统计，无法判断状态不计入有效学习或异常时长。
+              学习时长根据AI识别结果统计，证据不足状态不计入有效学习或离座时长。
             </div>
           </div>
           <div className="rounded-md border border-line bg-white p-4">
             <div className="text-sm font-medium">学习状态分布</div>
             <div className="mt-3 space-y-3">
               <ProgressRow label="学习中" value={learningInsights.studyingPercent} color="bg-brand" />
-              <ProgressRow label="思考中" value={learningInsights.thinkingPercent} color="bg-blue-500" />
-              <ProgressRow label="疑似分心" value={learningInsights.distractedPercent} color="bg-warn" />
+              <ProgressRow label="证据不足" value={learningInsights.uncertainPercent} color="bg-warn" />
               <ProgressRow label="离座" value={learningInsights.awayPercent} color="bg-alert" />
             </div>
           </div>
@@ -1135,7 +1132,7 @@ function reminderTypeForRecord(record: StudyRecord): ReminderType | null {
   const currentPresence = record.presence ?? legacyPresenceFromStatus(record.status);
   const currentLearningState = record.learning_state ?? legacyLearningStateFromStatus(record.status);
   if (currentPresence === "away") return "away";
-  if (currentLearningState === "suspected_distracted") return "suspected_distracted";
+  if (currentLearningState === "uncertain") return "uncertain";
   return null;
 }
 
@@ -1150,9 +1147,7 @@ function displayStateText(record: StudyRecord) {
   const currentLearningState = record.learning_state ?? legacyLearningStateFromStatus(record.status);
   if (currentPresence === "away") return "离座";
   if (currentLearningState === "studying") return "在位 · 学习中";
-  if (currentLearningState === "thinking") return "在位 · 思考中";
-  if (currentLearningState === "suspected_distracted") return "在位 · 疑似走神";
-  return "在位 · 无法判断";
+  return "在位 · 证据不足";
 }
 
 function legacyPresenceFromStatus(status: StudyStatus): Presence {
@@ -1161,8 +1156,7 @@ function legacyPresenceFromStatus(status: StudyStatus): Presence {
 
 function legacyLearningStateFromStatus(status: StudyStatus): LearningState {
   if (status === "studying") return "studying";
-  if (status === "distracted" || status === "unrelated") return "suspected_distracted";
-  return "unknown";
+  return "uncertain";
 }
 
 function MetricPill({ label, value }: { label: string; value: string }) {

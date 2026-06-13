@@ -35,13 +35,9 @@ function displayStatus(status: StudyStatus, presence?: Presence, learningState?:
     learningState ??
     (status === "studying"
       ? "studying"
-      : status === "distracted" || status === "unrelated"
-      ? "suspected_distracted"
-      : "unknown");
+      : "uncertain");
 
   if (currentPresence === "away") return "离座";
   if (currentLearningState === "studying") return "在位 · 学习中";
-  if (currentLearningState === "thinking") return "在位 · 思考中";
-  if (currentLearningState === "suspected_distracted") return "在位 · 疑似走神";
-  return statusLabels[status] === "离座" ? "在位 · 无法判断" : "在位 · 无法判断";
+  return statusLabels[status] === "离座" ? "在位 · 证据不足" : "在位 · 证据不足";
 }

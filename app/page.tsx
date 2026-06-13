@@ -115,7 +115,7 @@ export default function HomePage() {
         <div className="mb-5 grid gap-2 rounded-md border border-line bg-white p-4 text-sm text-muted">
           <div>记录真实学习时长</div>
           <div>统计有效学习时间</div>
-          <div>发现走神高发时段</div>
+          <div>发现离座和证据不足时段</div>
           <div>生成每日学习报告</div>
           <div>帮家长判断孩子是真学了，还是坐着耗时间</div>
         </div>

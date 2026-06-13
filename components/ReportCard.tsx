@@ -28,12 +28,8 @@ export function ReportCard({
   const visibleRecords = expanded ? records : records.slice(0, 20);
   const totalStatusCount =
     stats.studyingCount +
-    (stats.thinkingCount ?? 0) +
-    stats.distractedCount +
-    stats.awayCount +
-    stats.lyingCount +
-    stats.unrelatedCount +
-    stats.unknownCount;
+    stats.uncertainCount +
+    stats.awayCount;
   const summary = insufficientData
     ? "数据量不足，本报告仅供测试。请完成至少10分钟监督并产生5条以上识别记录后再查看学习诊断。"
     : isMockMode
@@ -44,19 +40,15 @@ export function ReportCard({
     ["总监督时长", `${stats.totalMinutes}分钟`],
     ["有效学习时长", `${stats.effectiveMinutes}分钟`],
     ["专注率", records.length >= 5 ? `${stats.focusRate}%` : "数据采集中"],
-    ["异常次数", `${stats.abnormalCount}次`],
+    ["离座次数", `${stats.awayCount}次`],
     ["提醒次数", `${stats.reminderCount}次`],
     ["最长连续专注时长", `${stats.longestFocusMinutes}分钟`]
   ];
 
   const statusItems = [
     ["学习中", stats.studyingCount],
-    ["思考中", stats.thinkingCount ?? 0],
-    ["疑似走神", stats.suspectedDistractedCount ?? stats.distractedCount],
-    ["离座", stats.awayCount],
-    ["趴桌", stats.lyingCount],
-    ["玩无关物品", stats.unrelatedCount],
-    ["无法判断", stats.unknownCount]
+    ["证据不足", stats.uncertainCount],
+    ["离座", stats.awayCount]
   ];
 
   return (
@@ -68,8 +60,7 @@ export function ReportCard({
             ["专注率", records.length >= 5 ? `${learningInsights.focusRate}%` : "数据采集中"],
             ["学习评价", learningInsights.grade],
             ["有效学习", `${learningInsights.studyingMinutes}分钟`],
-            ["思考时间", `${learningInsights.thinkingMinutes}分钟`],
-            ["疑似分心", `${learningInsights.distractedCount}次`],
+            ["证据不足", `${learningInsights.uncertainCount}次`],
             ["离座", `${learningInsights.awayCount}次`],
             ["提醒", `${stats.reminderCount}次`]
           ].map(([label, value]) => (
@@ -217,9 +208,9 @@ export function ReportCard({
 
 function buildOneLineSummary(stats: StudyStats) {
   if (stats.focusRate >= 80) return "本次学习整体稳定，专注状态保持较好。";
-  if (stats.focusRate >= 60) return "本次学习基本完成，中途出现一定分心，需要关注节奏。";
-  if (stats.focusRate >= 40) return "本次学习专注度偏低，建议缩短单次学习时长。";
-  return "本次学习异常较多，建议优先检查学习环境和任务难度。";
+  if (stats.focusRate >= 60) return "本次学习有一定学习行为证据，也存在部分证据不足记录。";
+  if (stats.focusRate >= 40) return "本次明确学习行为占比偏低，建议优化拍摄角度并缩短单次学习时长。";
+  return "本次离座或证据不足较多，建议优先检查学习环境、拍摄角度和任务难度。";
 }
 
 function buildInsightSummary(insights: ReturnType<typeof calculateLearningInsights>) {
@@ -227,30 +218,30 @@ function buildInsightSummary(insights: ReturnType<typeof calculateLearningInsigh
     return "本次有效识别数据较少，建议先调整拍摄角度，完成一段稳定监督后再查看学习分析。";
   }
   if (insights.focusRate >= 90) {
-    return "本次学习整体专注度较高，仅出现少量短暂波动，能够持续保持学习状态。";
+    return "本次学习行为证据较稳定，大部分时间能够看到明确学习动作。";
   }
   if (insights.awayCount >= 2) {
     return "本次学习过程中出现多次离座，建议优化学习环境，提前准备好文具、作业材料和水杯。";
   }
-  if (insights.distractedCount >= 3) {
-    return "本次学习中出现多次疑似分心，建议采用分段学习，并减少桌面干扰物。";
+  if (insights.uncertainCount >= 3) {
+    return "本次存在多次证据不足记录，建议调整手机角度，确保能看到上半身、双手和作业区域。";
   }
   if (insights.focusRate >= 80) {
-    return "本次学习整体表现良好，偶尔出现分心，但大部分时间能够维持学习或思考状态。";
+    return "本次学习整体表现良好，大部分时间能够看到明确学习行为。";
   }
   if (insights.focusRate >= 70) {
-    return "本次学习存在一定分心情况，建议关注容易中断的时间段，帮助孩子保持连续专注。";
+    return "本次学习基本稳定，建议继续观察证据不足出现的时间段。";
   }
-  return "本次离座或疑似分心较多，建议缩短单次学习时长，并减少外部干扰。";
+  return "本次离座或证据不足较多，建议缩短单次学习时长，并优化拍摄角度。";
 }
 
 function buildKeyEvents(records: StudyRecord[], stats: StudyStats, insufficientData: boolean) {
   const events = [
-    `本次疑似分心 ${stats.suspectedDistractedCount ?? stats.distractedCount} 次`,
+    `本次证据不足 ${stats.uncertainCount} 次`,
     `本次离座 ${stats.awayCount} 次`,
     `本次触发提醒 ${stats.reminderCount} 次`,
-    `本次共出现 ${stats.abnormalCount} 次异常状态`,
-    `最集中异常时段：${findAbnormalWindow(records)}`,
+    `本次共出现 ${stats.awayCount} 次离座状态`,
+    `最集中离座时段：${findAbnormalWindow(records)}`,
     stats.longestFocusMinutes > 0
       ? `最长连续专注时长约 ${stats.longestFocusMinutes} 分钟`
       : "本次没有检测到连续稳定学习时段"
@@ -269,7 +260,7 @@ function buildKeyEvents(records: StudyRecord[], stats: StudyStats, insufficientD
 function findAbnormalWindow(records: StudyRecord[]) {
   const abnormal = records.filter((record) => {
     const state = normalizeRecordState(record);
-    return state.presence === "away" || state.learningState === "suspected_distracted";
+    return state.presence === "away";
   });
   if (abnormal.length === 0) return "未出现集中异常";
   const first = abnormal[0];
@@ -281,9 +272,7 @@ function displayStateText(record: StudyRecord) {
   const state = normalizeRecordState(record);
   if (state.presence === "away") return "离座";
   if (state.learningState === "studying") return "在位 · 学习中";
-  if (state.learningState === "thinking") return "在位 · 思考中";
-  if (state.learningState === "suspected_distracted") return "在位 · 疑似走神";
-  return "在位 · 无法判断";
+  return "在位 · 证据不足";
 }
 
 function formatMinute(value: string) {
@@ -300,7 +289,7 @@ function trendTitle(key: string) {
     segmentSuggestion: "是否建议分段学习",
     sevenDayTrend: "最近7天趋势",
     weekOverWeek: "与上周同比",
-    distractionWindow: "最容易走神时间段",
+    distractionWindow: "证据不足高发时间段",
     learningProfile: "学习状态画像",
     interventionAdvice: "家长干预建议"
   };

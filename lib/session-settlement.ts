@@ -20,8 +20,7 @@ type SettlementResult =
 
 function legacyLearningStateFromStatus(status: StudyStatus): LearningState {
   if (status === "studying") return "studying";
-  if (status === "distracted" || status === "unrelated") return "suspected_distracted";
-  return "unknown";
+  return "uncertain";
 }
 
 function minutesBetween(startTime: string, endTime: string) {

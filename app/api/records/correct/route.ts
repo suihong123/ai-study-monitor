@@ -18,8 +18,7 @@ function presenceFromStatus(status: StudyStatus): Presence {
 
 function learningStateFromStatus(status: StudyStatus): LearningState {
   if (status === "studying") return "studying";
-  if (status === "distracted" || status === "unrelated") return "suspected_distracted";
-  return "unknown";
+  return "uncertain";
 }
 
 export async function POST(request: NextRequest) {

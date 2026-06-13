@@ -10,11 +10,9 @@ export type Presence = "present" | "away";
 
 export type LearningState =
   | "studying"
-  | "thinking"
-  | "suspected_distracted"
-  | "unknown";
+  | "uncertain";
 
-export type ReminderType = "suspected_distracted" | "away";
+export type ReminderType = "uncertain" | "away";
 
 export type PlanType =
   | "trial"
@@ -114,6 +112,7 @@ export type StudyStats = {
   effectiveMinutes: number;
   focusRate: number;
   studyingCount: number;
+  uncertainCount: number;
   thinkingCount: number;
   suspectedDistractedCount: number;
   distractedCount: number;
@@ -139,11 +138,11 @@ export type ReportPayload = {
 
 export const statusLabels: Record<StudyStatus, string> = {
   studying: "正常学习",
-  distracted: "疑似走神",
+  distracted: "证据不足",
   away: "离座",
-  lying: "趴桌",
-  unrelated: "玩无关物品",
-  unknown: "无法判断"
+  lying: "证据不足",
+  unrelated: "证据不足",
+  unknown: "证据不足"
 };
 
 export const abnormalStatuses: StudyStatus[] = [

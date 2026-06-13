@@ -20,9 +20,9 @@ function findDeclinePeriod(records: StudyRecord[]) {
 
 function buildBasicConclusion(stats: ReturnType<typeof calculateStats>) {
   if (stats.focusRate >= 80) return "本次学习状态较好，整体专注度较高。";
-  if (stats.focusRate >= 60) return "本次学习状态一般，中途存在一定分心。";
-  if (stats.focusRate >= 40) return "本次有效学习占比偏低，建议缩短单次学习时间。";
-  return "本次学习过程异常较多，建议家长关注学习环境和任务难度。";
+  if (stats.focusRate >= 60) return "本次学习有一定明确学习行为，也存在部分证据不足记录。";
+  if (stats.focusRate >= 40) return "本次明确学习行为占比偏低，建议缩短单次学习时间并优化拍摄角度。";
+  return "本次离座或证据不足较多，建议家长关注学习环境、拍摄角度和任务难度。";
 }
 
 function buildParentAdvice(stats: ReturnType<typeof calculateStats>) {
@@ -30,28 +30,19 @@ function buildParentAdvice(stats: ReturnType<typeof calculateStats>) {
   if (stats.awayCount >= 2) {
     advice.push("本次离座次数较多，建议家长关注学习前是否准备充分，例如水杯、文具、作业材料。");
   }
-  if (stats.distractedCount >= 3) {
-    advice.push("本次分心次数较多，建议采用25分钟学习+5分钟休息模式。");
-  }
-  if (stats.unrelatedCount >= 2) {
-    advice.push("本次无关物品次数较多，建议学习前清理桌面，只保留当前作业相关物品。");
+  if (stats.uncertainCount >= 3) {
+    advice.push("本次证据不足记录较多，建议调整手机角度，确保能看到孩子上半身、双手和作业区域。");
   }
   const unknownRate =
     stats.studyingCount +
-      stats.distractedCount +
       stats.awayCount +
-      stats.lyingCount +
-      stats.unrelatedCount +
-      stats.unknownCount ===
+      stats.uncertainCount ===
     0
       ? 0
-      : stats.unknownCount /
+      : stats.uncertainCount /
         (stats.studyingCount +
-          stats.distractedCount +
           stats.awayCount +
-          stats.lyingCount +
-          stats.unrelatedCount +
-          stats.unknownCount);
+          stats.uncertainCount);
   if (unknownRate > 0.2) {
     advice.push("建议调整手机角度，确保画面能看到孩子上半身、桌面和双手。");
   }
@@ -69,7 +60,7 @@ function buildMockTrend(reportLevel: ReportLevel, records: StudyRecord[]) {
 
   const base = {
     declinePeriod: findDeclinePeriod(records),
-    statusSummary: "学习前段进入状态较快，中后段需要关注任务切换和疲劳。",
+    statusSummary: "学习前段进入状态较快，中后段需要关注是否能持续看到明确学习行为。",
     segmentSuggestion: records.length >= 50 ? "建议分段学习" : "暂不强制分段"
   };
 
@@ -79,8 +70,8 @@ function buildMockTrend(reportLevel: ReportLevel, records: StudyRecord[]) {
     ...base,
     sevenDayTrend: "最近7天专注率模拟趋势：68% -> 72% -> 70% -> 76% -> 74% -> 78% -> 80%。",
     weekOverWeek: "与上周同比模拟提升约6个百分点。",
-    distractionWindow: "最容易走神时间段模拟为学习开始后35-50分钟。",
-    learningProfile: "学习状态画像：启动较快，持续专注能力中等，后半程更依赖环境稳定。",
+    distractionWindow: "证据不足高发时间段模拟为学习开始后35-50分钟。",
+    learningProfile: "学习状态画像：启动较快，明确学习行为记录中等，后半程更依赖环境稳定。",
     interventionAdvice: "家长可在第30分钟安排一次短暂停顿，帮助孩子确认剩余任务。"
   };
 }

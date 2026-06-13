@@ -91,14 +91,14 @@ create table if not exists records (
   reason text,
   analyze_mode text default 'mock',
   presence text default 'present' check (presence in ('present', 'away')),
-  learning_state text default 'unknown' check (
-    learning_state in ('studying', 'thinking', 'suspected_distracted', 'unknown')
+  learning_state text default 'uncertain' check (
+    learning_state in ('studying', 'uncertain')
   ),
   current_frequency_seconds integer,
   frequency_boosted_by_abnormal boolean default false,
   frequency_lowered_by_focus boolean default false,
   triggered_reminder boolean default false,
-  reminder_type text check (reminder_type in ('suspected_distracted', 'away')),
+  reminder_type text check (reminder_type in ('uncertain', 'away')),
   reminder_text text,
   ai_called boolean default true,
   error_message text,
