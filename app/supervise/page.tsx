@@ -75,6 +75,59 @@ type WakeLockSentinel = {
 type WebAudioWindow = Window & {
   webkitAudioContext?: typeof AudioContext;
 };
+type AudioTestStep = {
+  label: string;
+  status: "pending" | "success" | "failed" | "skipped";
+  detail?: string;
+};
+
+function createInlineBeepWavUrl() {
+  const sampleRate = 44100;
+  const durationSeconds = 0.6;
+  const frequency = 880;
+  const amplitude = 0.35;
+  const sampleCount = Math.floor(sampleRate * durationSeconds);
+  const buffer = new ArrayBuffer(44 + sampleCount * 2);
+  const view = new DataView(buffer);
+
+  function writeString(offset: number, value: string) {
+    for (let index = 0; index < value.length; index += 1) {
+      view.setUint8(offset + index, value.charCodeAt(index));
+    }
+  }
+
+  writeString(0, "RIFF");
+  view.setUint32(4, 36 + sampleCount * 2, true);
+  writeString(8, "WAVE");
+  writeString(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeString(36, "data");
+  view.setUint32(40, sampleCount * 2, true);
+
+  for (let index = 0; index < sampleCount; index += 1) {
+    const progress = index / sampleCount;
+    const fadeIn = Math.min(1, progress / 0.08);
+    const fadeOut = Math.min(1, (1 - progress) / 0.12);
+    const envelope = Math.min(fadeIn, fadeOut);
+    const sample =
+      Math.sin((2 * Math.PI * frequency * index) / sampleRate) * amplitude * envelope;
+    view.setInt16(44 + index * 2, Math.round(sample * 32767), true);
+  }
+
+  let binary = "";
+  const bytes = new Uint8Array(buffer);
+  for (let index = 0; index < bytes.length; index += 1) {
+    binary += String.fromCharCode(bytes[index]);
+  }
+
+  return `data:audio/wav;base64,${window.btoa(binary)}`;
+}
 
 export default function SupervisePage() {
   const router = useRouter();
@@ -108,6 +161,7 @@ export default function SupervisePage() {
   const [placementConfirmed, setPlacementConfirmed] = useState(false);
   const [needsRecoveryDecision, setNeedsRecoveryDecision] = useState(false);
   const [audioTestMessage, setAudioTestMessage] = useState("");
+  const [audioTestSteps, setAudioTestSteps] = useState<AudioTestStep[]>([]);
   const [wakeLockMessage, setWakeLockMessage] = useState("");
 
   const elapsedMinutes = Math.floor(elapsedSeconds / 60);
@@ -152,11 +206,10 @@ export default function SupervisePage() {
     const now = audioContext.currentTime;
 
     oscillator.type = "sine";
-    oscillator.frequency.setValueAtTime(660, now);
-    oscillator.frequency.exponentialRampToValueAtTime(520, now + 0.35);
+    oscillator.frequency.setValueAtTime(880, now);
     gain.gain.setValueAtTime(0.0001, now);
-    gain.gain.exponentialRampToValueAtTime(0.18, now + 0.03);
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.42);
+    gain.gain.exponentialRampToValueAtTime(0.3, now + 0.03);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.58);
 
     oscillator.connect(gain);
     gain.connect(audioContext.destination);
@@ -166,7 +219,7 @@ export default function SupervisePage() {
     }
 
     oscillator.start(now);
-    oscillator.stop(now + 0.45);
+    oscillator.stop(now + 0.6);
 
     await new Promise<void>((resolve) => {
       oscillator.onended = () => {
@@ -176,6 +229,19 @@ export default function SupervisePage() {
     });
 
     return true;
+  }, []);
+
+  const playInlineWav = useCallback(async () => {
+    const audio = new Audio(createInlineBeepWavUrl());
+    audio.preload = "auto";
+    audio.muted = false;
+    audio.volume = 1;
+    audio.setAttribute("playsinline", "true");
+    await audio.play();
+    await new Promise<void>((resolve) => {
+      audio.onended = () => resolve();
+      window.setTimeout(resolve, 900);
+    });
   }, []);
 
   const speak = useCallback((text: string) => {
@@ -203,33 +269,72 @@ export default function SupervisePage() {
   }, [playBeep, speak]);
 
   const testReminderSound = useCallback(async () => {
-    console.info("[提醒声音测试] 开始播放 beep 提示音");
+    const nextSteps: AudioTestStep[] = [];
+    const updateStep = (step: AudioTestStep) => {
+      const existingIndex = nextSteps.findIndex((item) => item.label === step.label);
+      const next =
+        existingIndex >= 0
+          ? nextSteps.map((item, index) => (index === existingIndex ? step : item))
+          : [...nextSteps, step];
+      nextSteps.splice(0, nextSteps.length, ...next);
+      setAudioTestSteps(next);
+    };
+
+    console.info("[提醒声音测试] 开始安卓兼容播放测试");
     setAudioTestMessage("");
+    setAudioTestSteps([]);
+    let webAudioOk = false;
+    let audioTagOk = false;
 
     try {
+      updateStep({ label: "WebAudio", status: "pending", detail: "开始播放 880Hz / 0.6秒 / gain 0.3" });
       const beepPlayed = await playBeep();
-      if (!beepPlayed) {
-        const message = "当前浏览器不支持提示音播放，请更换浏览器或调高系统音量。";
-        console.error("[提醒声音测试] Web Audio API 不支持");
-        setAudioTestMessage(message);
-        speak("这是学习监督提醒声音，请确认音量合适。");
-        return;
-      }
-
-      console.info("[提醒声音测试] beep 播放成功");
-      const speechStarted = speak("这是学习监督提醒声音，请确认音量合适。");
-      console.info(
-        speechStarted
-          ? "[提醒声音测试] 已尝试 speechSynthesis 朗读"
-          : "[提醒声音测试] speechSynthesis 不可用，仅播放 beep"
+      webAudioOk = beepPlayed;
+      updateStep(
+        beepPlayed
+          ? { label: "WebAudio", status: "success", detail: "已完成播放" }
+          : { label: "WebAudio", status: "failed", detail: "当前浏览器不支持 Web Audio API" }
       );
-      setAudioTestMessage("测试提示音已播放，请确认手机音量合适。");
     } catch (error) {
-      console.error("[提醒声音测试] beep 播放失败", error);
-      setAudioTestMessage("检测到浏览器禁止自动播放或设备静音，请提高系统音量后重试。");
-      speak("这是学习监督提醒声音，请确认音量合适。");
+      console.error("[提醒声音测试] WebAudio 播放失败", error);
+      updateStep({
+        label: "WebAudio",
+        status: "failed",
+        detail: error instanceof Error ? error.message : String(error)
+      });
     }
-  }, [playBeep, speak]);
+
+    if (!webAudioOk) {
+      try {
+        updateStep({ label: "Audio标签", status: "pending", detail: "开始播放内联 base64 wav" });
+        await playInlineWav();
+        audioTagOk = true;
+        updateStep({ label: "Audio标签", status: "success", detail: "已完成播放" });
+      } catch (error) {
+        console.error("[提醒声音测试] Audio 标签播放失败", error);
+        updateStep({
+          label: "Audio标签",
+          status: "failed",
+          detail: error instanceof Error ? error.message : String(error)
+        });
+      }
+    } else {
+      updateStep({ label: "Audio标签", status: "skipped", detail: "WebAudio 已成功，未继续测试" });
+    }
+
+    if (!webAudioOk && !audioTagOk) {
+      const speechStarted = speak("这是学习监督提醒声音，请确认音量合适。");
+      updateStep(
+        speechStarted
+          ? { label: "TTS", status: "success", detail: "已尝试 speechSynthesis 朗读" }
+          : { label: "TTS", status: "failed", detail: "speechSynthesis 不可用或启动失败" }
+      );
+    } else {
+      updateStep({ label: "TTS", status: "skipped", detail: "前置提示音已成功，未继续测试" });
+    }
+
+    setAudioTestMessage("如果安卓仍无声，请检查媒体音量，不是铃声音量。");
+  }, [playBeep, playInlineWav, speak]);
 
   const applyInterval = useCallback((nextInterval: number, reason: FrequencyReason) => {
     const boundedInterval = Math.min(nextInterval, maxAnalyzeIntervalSeconds);
@@ -764,6 +869,7 @@ export default function SupervisePage() {
             {audioTestMessage}
           </div>
         )}
+        <AudioTestSteps steps={audioTestSteps} />
         {wakeLockMessage && (
           <div className="mt-2 rounded-md bg-amber-50 p-2 text-xs leading-5 text-warn">
             {wakeLockMessage}
@@ -948,6 +1054,7 @@ export default function SupervisePage() {
                 {audioTestMessage}
               </div>
             )}
+            <AudioTestSteps steps={audioTestSteps} />
             <div className="mt-4 flex flex-col gap-2 sm:flex-row">
               <button
                 type="button"
@@ -1087,4 +1194,30 @@ function ProgressRow({
       </div>
     </div>
   );
+}
+
+function AudioTestSteps({ steps }: { steps: AudioTestStep[] }) {
+  if (steps.length === 0) return null;
+
+  return (
+    <div className="mt-2 space-y-1 rounded-md bg-panel p-2 text-xs leading-5 text-muted">
+      {steps.map((step, index) => (
+        <div key={`${step.label}-${index}`}>
+          <span className="font-medium text-ink">{step.label}</span>
+          <span>：{audioStatusLabel(step.status)}</span>
+          {step.detail && <span> / {step.detail}</span>}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function audioStatusLabel(status: AudioTestStep["status"]) {
+  const labels: Record<AudioTestStep["status"], string> = {
+    pending: "测试中",
+    success: "成功",
+    failed: "失败",
+    skipped: "未执行"
+  };
+  return labels[status];
 }
