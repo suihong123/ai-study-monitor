@@ -68,6 +68,10 @@ const abnormalStatuses: StudyStatus[] = ["distracted", "unrelated", "lying", "aw
 const maxAnalyzeIntervalSeconds = 300;
 
 type FrequencyReason = "normal" | "abnormal" | "focused";
+type WakeLockSentinel = {
+  release: () => Promise<void>;
+  addEventListener: (type: "release", listener: () => void) => void;
+};
 
 export default function SupervisePage() {
   const router = useRouter();
@@ -83,6 +87,7 @@ export default function SupervisePage() {
   const analyzeFailureCountRef = useRef(0);
   const frequencyReasonRef = useRef<FrequencyReason>("normal");
   const initialAnalyzeTimerRef = useRef<number | null>(null);
+  const wakeLockRef = useRef<WakeLockSentinel | null>(null);
   const lastReminderAtRef = useRef<Partial<Record<ReminderType, number>>>({});
   const reminderCountByTypeRef = useRef<Partial<Record<ReminderType, number>>>({});
   const [current, setCurrent] = useState<CurrentSupervision | null>(null);
@@ -100,6 +105,7 @@ export default function SupervisePage() {
   const [placementConfirmed, setPlacementConfirmed] = useState(false);
   const [needsRecoveryDecision, setNeedsRecoveryDecision] = useState(false);
   const [audioTestMessage, setAudioTestMessage] = useState("");
+  const [wakeLockMessage, setWakeLockMessage] = useState("");
 
   const elapsedMinutes = Math.floor(elapsedSeconds / 60);
   const todayRemainingMinutes = Math.max(
@@ -464,6 +470,36 @@ export default function SupervisePage() {
     }
   }, [current]);
 
+  const releaseWakeLock = useCallback(async () => {
+    const wakeLock = wakeLockRef.current;
+    wakeLockRef.current = null;
+    if (!wakeLock) return;
+    try {
+      await wakeLock.release();
+    } catch {
+      // Wake Lock may already be released by the browser.
+    }
+  }, []);
+
+  const requestWakeLock = useCallback(async () => {
+    if (!("wakeLock" in navigator)) {
+      setWakeLockMessage("为了保证监督正常运行，请将手机自动锁屏时间调整为较长时间。");
+      return;
+    }
+    if (wakeLockRef.current || document.hidden) return;
+
+    try {
+      const wakeLock = await navigator.wakeLock.request("screen");
+      wakeLockRef.current = wakeLock as WakeLockSentinel;
+      setWakeLockMessage("");
+      wakeLockRef.current.addEventListener("release", () => {
+        wakeLockRef.current = null;
+      });
+    } catch {
+      setWakeLockMessage("为了保证监督正常运行，请将手机自动锁屏时间调整为较长时间。");
+    }
+  }, []);
+
   const finish = useCallback(async () => {
     if (!current || finishingRef.current) return;
     const activeSupervision = current;
@@ -522,10 +558,11 @@ export default function SupervisePage() {
         })
       });
     } finally {
+      void releaseWakeLock();
       streamRef.current?.getTracks().forEach((track) => track.stop());
       router.push("/report");
     }
-  }, [current, router]);
+  }, [current, releaseWakeLock, router]);
 
   useEffect(() => {
     const raw = window.sessionStorage.getItem("current-supervision");
@@ -612,6 +649,9 @@ export default function SupervisePage() {
   useEffect(() => {
     function updateActivity() {
       setPageActive(!document.hidden && navigator.onLine);
+      if (!document.hidden && navigator.onLine && current && placementConfirmed && !needsRecoveryDecision) {
+        void requestWakeLock();
+      }
     }
 
     updateActivity();
@@ -623,7 +663,15 @@ export default function SupervisePage() {
       window.removeEventListener("online", updateActivity);
       window.removeEventListener("offline", updateActivity);
     };
-  }, []);
+  }, [current, needsRecoveryDecision, placementConfirmed, requestWakeLock]);
+
+  useEffect(() => {
+    if (!current || !placementConfirmed || needsRecoveryDecision) return;
+    void requestWakeLock();
+    return () => {
+      void releaseWakeLock();
+    };
+  }, [current, needsRecoveryDecision, placementConfirmed, releaseWakeLock, requestWakeLock]);
 
   useEffect(() => {
     if (!current || !placementConfirmed || needsRecoveryDecision || !pageActive || finishingRef.current) return;
@@ -677,6 +725,11 @@ export default function SupervisePage() {
         {audioTestMessage && (
           <div className="mt-2 rounded-md bg-panel p-2 text-xs text-muted">
             {audioTestMessage}
+          </div>
+        )}
+        {wakeLockMessage && (
+          <div className="mt-2 rounded-md bg-amber-50 p-2 text-xs leading-5 text-warn">
+            {wakeLockMessage}
           </div>
         )}
       </div>
