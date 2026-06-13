@@ -47,6 +47,7 @@ const repeatReminderTexts: Record<ReminderType, string> = {
 };
 
 const reminderCooldownMs = 3 * 60 * 1000;
+const awayDurationReminderMs = 60 * 1000;
 
 const correctionButtons: Array<{ status: StudyStatus; label: string }> = [
   { status: "studying", label: "我在学习" },
@@ -142,6 +143,7 @@ export default function SupervisePage() {
   const frequencyReasonRef = useRef<FrequencyReason>("normal");
   const initialAnalyzeTimerRef = useRef<number | null>(null);
   const wakeLockRef = useRef<WakeLockSentinel | null>(null);
+  const awayStartAtRef = useRef<number | null>(null);
   const lastReminderAtRef = useRef<Partial<Record<ReminderType, number>>>({});
   const reminderCountByTypeRef = useRef<Partial<Record<ReminderType, number>>>({});
   const [current, setCurrent] = useState<CurrentSupervision | null>(null);
@@ -161,6 +163,9 @@ export default function SupervisePage() {
   const [audioTestMessage, setAudioTestMessage] = useState("");
   const [audioTestSteps, setAudioTestSteps] = useState<AudioTestStep[]>([]);
   const [wakeLockMessage, setWakeLockMessage] = useState("");
+  const [awayDurationSeconds, setAwayDurationSeconds] = useState(0);
+  const [awayCanRemind, setAwayCanRemind] = useState(false);
+  const [awayCooldownUntil, setAwayCooldownUntil] = useState(0);
 
   const elapsedMinutes = Math.floor(elapsedSeconds / 60);
   const todayRemainingMinutes = Math.max(
@@ -190,6 +195,10 @@ export default function SupervisePage() {
         )
       )
     : 0;
+  const awayCooldownRemainingSeconds = Math.max(
+    0,
+    Math.ceil((awayCooldownUntil - Date.now()) / 1000)
+  );
 
   const playBeep = useCallback(async () => {
     const AudioContextClass =
@@ -398,33 +407,27 @@ export default function SupervisePage() {
     applyInterval(defaultInterval, "normal");
   }, [applyInterval, current, defaultIntervalForNow, highIntervalForCurrentPlan]);
 
-  const maybeRemind = useCallback(
-    (nextRecords: StudyRecord[]) => {
-      const latest = nextRecords[nextRecords.length - 1];
-      const previous = nextRecords[nextRecords.length - 2];
-      if (!latest || !previous) return null;
-
-      const latestReminderType = reminderTypeForRecord(latest);
-      if (!latestReminderType || latestReminderType !== reminderTypeForRecord(previous)) {
-        return null;
-      }
-
-      const lastReminderAt = lastReminderAtRef.current[latestReminderType] ?? 0;
+  const triggerReminder = useCallback(
+    (reminderType: ReminderType) => {
+      const lastReminderAt = lastReminderAtRef.current[reminderType] ?? 0;
       if (Date.now() - lastReminderAt < reminderCooldownMs) {
         return null;
       }
 
-      const reminderCount = reminderCountByTypeRef.current[latestReminderType] ?? 0;
+      const reminderCount = reminderCountByTypeRef.current[reminderType] ?? 0;
       const text =
         reminderCount === 0
-          ? firstReminderTexts[latestReminderType]
-          : repeatReminderTexts[latestReminderType];
+          ? firstReminderTexts[reminderType]
+          : repeatReminderTexts[reminderType];
 
       void playReminderAudio(text);
-      lastReminderAtRef.current[latestReminderType] = Date.now();
-      reminderCountByTypeRef.current[latestReminderType] = reminderCount + 1;
+      lastReminderAtRef.current[reminderType] = Date.now();
+      reminderCountByTypeRef.current[reminderType] = reminderCount + 1;
+      if (reminderType === "away") {
+        setAwayCooldownUntil(Date.now() + reminderCooldownMs);
+      }
       const reminder = {
-        type: latestReminderType,
+        type: reminderType,
         text,
         timestamp: Date.now()
       };
@@ -432,6 +435,48 @@ export default function SupervisePage() {
       return reminder;
     },
     [playReminderAudio]
+  );
+
+  const maybeRemind = useCallback(
+    (nextRecords: StudyRecord[]) => {
+      const latest = nextRecords[nextRecords.length - 1];
+      if (!latest) return null;
+
+      const latestReminderType = reminderTypeForRecord(latest);
+      const latestIsAway = latestReminderType === "away";
+      if (!latestIsAway) {
+        awayStartAtRef.current = null;
+        setAwayDurationSeconds(0);
+        setAwayCanRemind(false);
+      }
+
+      if (!latestReminderType) return null;
+
+      if (latestIsAway) {
+        const previous = nextRecords[nextRecords.length - 2];
+        const previousIsAway = previous ? reminderTypeForRecord(previous) === "away" : false;
+        const latestTimestamp = new Date(latest.timestamp).getTime();
+        if (!awayStartAtRef.current) {
+          awayStartAtRef.current = Number.isFinite(latestTimestamp) ? latestTimestamp : Date.now();
+        }
+        const awayDurationMs = Date.now() - awayStartAtRef.current;
+        const durationConditionMet = awayDurationMs >= awayDurationReminderMs;
+        const reminderReady = previousIsAway || durationConditionMet;
+        setAwayDurationSeconds(Math.max(0, Math.floor(awayDurationMs / 1000)));
+        setAwayCanRemind(reminderReady);
+
+        if (!reminderReady) return null;
+        return triggerReminder("away");
+      }
+
+      const previous = nextRecords[nextRecords.length - 2];
+      if (!previous || latestReminderType !== reminderTypeForRecord(previous)) {
+        return null;
+      }
+
+      return triggerReminder(latestReminderType);
+    },
+    [triggerReminder]
   );
 
   const captureImage = useCallback(() => {
@@ -588,6 +633,23 @@ export default function SupervisePage() {
     },
     [current]
   );
+
+  const markLatestRecordReminder = useCallback((reminder: LastReminder) => {
+    const currentRecords = recordsRef.current;
+    if (currentRecords.length === 0) return;
+    const nextRecords = currentRecords.map((record, index) =>
+      index === currentRecords.length - 1
+        ? {
+            ...record,
+            triggered_reminder: true,
+            reminder_type: reminder.type,
+            reminder_text: reminder.text
+          }
+        : record
+    );
+    recordsRef.current = nextRecords;
+    setRecords(nextRecords);
+  }, []);
 
   const sendHeartbeat = useCallback(async () => {
     if (!current || finishingRef.current || !navigator.onLine) return;
@@ -830,6 +892,33 @@ export default function SupervisePage() {
   }, [current, needsRecoveryDecision, pageActive, sendHeartbeat]);
 
   useEffect(() => {
+    if (!current || needsRecoveryDecision || !pageActive || finishingRef.current) return;
+    const timer = window.setInterval(() => {
+      const awayStartAt = awayStartAtRef.current;
+      const latest = recordsRef.current[recordsRef.current.length - 1];
+      const latestIsAway = latest ? reminderTypeForRecord(latest) === "away" : false;
+      if (!awayStartAt || !latestIsAway) {
+        setAwayDurationSeconds(0);
+        setAwayCanRemind(false);
+        return;
+      }
+
+      const durationSeconds = Math.max(0, Math.floor((Date.now() - awayStartAt) / 1000));
+      const conditionMet = durationSeconds >= awayDurationReminderMs / 1000;
+      setAwayDurationSeconds(durationSeconds);
+      setAwayCanRemind(conditionMet);
+
+      if (conditionMet) {
+        const reminder = triggerReminder("away");
+        if (reminder) {
+          markLatestRecordReminder(reminder);
+        }
+      }
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [current, markLatestRecordReminder, needsRecoveryDecision, pageActive, triggerReminder]);
+
+  useEffect(() => {
     if (!current || abnormalLockRef.current || Date.now() < intensityUntilRef.current) return;
     applyInterval(defaultIntervalForNow(), "normal");
   }, [applyInterval, current, defaultIntervalForNow, elapsedMinutes]);
@@ -998,6 +1087,19 @@ export default function SupervisePage() {
             )}
           </div>
           <div className="rounded-md border border-line bg-white p-4">
+            <div className="text-sm font-medium">离座提醒诊断</div>
+            <div className="mt-2 space-y-1 text-sm leading-6 text-muted">
+              <div>当前 away 持续时长：{formatDurationSeconds(awayDurationSeconds)}</div>
+              <div>是否满足离座提醒条件：{awayCanRemind ? "是" : "否"}</div>
+              <div>
+                是否处于冷却中：
+                {awayCooldownRemainingSeconds > 0
+                  ? `是，还需 ${formatDurationSeconds(awayCooldownRemainingSeconds)}`
+                  : "否"}
+              </div>
+            </div>
+          </div>
+          <div className="rounded-md border border-line bg-white p-4">
             <div className="text-sm font-medium">最近记录</div>
             <div className="mt-3 space-y-2 text-sm">
               {records.slice(-10).reverse().map((record, index) => (
@@ -1140,6 +1242,14 @@ function formatRelativeReminderTime(timestamp: number) {
   const minutes = Math.max(0, Math.floor((Date.now() - timestamp) / 60_000));
   if (minutes === 0) return "刚刚";
   return `${minutes}分钟前`;
+}
+
+function formatDurationSeconds(seconds: number) {
+  const safeSeconds = Math.max(0, seconds);
+  const minutes = Math.floor(safeSeconds / 60);
+  const restSeconds = safeSeconds % 60;
+  if (minutes === 0) return `${restSeconds}秒`;
+  return `${minutes}分${restSeconds}秒`;
 }
 
 function displayStateText(record: StudyRecord) {
