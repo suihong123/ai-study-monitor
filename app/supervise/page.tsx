@@ -48,6 +48,7 @@ const repeatReminderTexts: Record<ReminderType, string> = {
 
 const reminderCooldownMs = 3 * 60 * 1000;
 const awayDurationReminderMs = 60 * 1000;
+const startupSupervisionMs = 5 * 60 * 1000;
 
 const correctionButtons: Array<{ status: StudyStatus; label: string }> = [
   { status: "studying", label: "我在学习" },
@@ -79,6 +80,7 @@ type AudioTestStep = {
   status: "pending" | "success" | "failed" | "skipped";
   detail?: string;
 };
+type BeepPattern = "single" | "triple";
 
 function createInlineBeepWavUrl() {
   const sampleRate = 44100;
@@ -166,6 +168,7 @@ export default function SupervisePage() {
   const [awayDurationSeconds, setAwayDurationSeconds] = useState(0);
   const [awayCanRemind, setAwayCanRemind] = useState(false);
   const [awayCooldownUntil, setAwayCooldownUntil] = useState(0);
+  const [lastAudioResult, setLastAudioResult] = useState("暂无声音播放记录");
 
   const elapsedMinutes = Math.floor(elapsedSeconds / 60);
   const todayRemainingMinutes = Math.max(
@@ -183,8 +186,27 @@ export default function SupervisePage() {
     [elapsedMinutes, records]
   );
   const latestRecord = records[records.length - 1];
+  const latestRecordTime = latestRecord
+    ? new Date(latestRecord.timestamp).toLocaleTimeString("zh-CN", {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit"
+      })
+    : "暂无";
+  const isStartupSupervision = elapsedSeconds < startupSupervisionMs / 1000;
+  const currentModeLabel = isStartupSupervision ? "启动强监督" : "正常监督";
+  const consecutiveUncertainCount = [...records]
+    .reverse()
+    .findIndex((record) => {
+      const recordPresence = record.presence ?? legacyPresenceFromStatus(record.status);
+      const recordLearningState =
+        record.learning_state ?? legacyLearningStateFromStatus(record.status);
+      return !(recordPresence === "present" && recordLearningState === "uncertain");
+    });
+  const recentUncertainCount =
+    consecutiveUncertainCount === -1 ? records.length : consecutiveUncertainCount;
   const shouldShowAngleWarning =
-    latestRecord?.learning_state === "uncertain" ||
+    recentUncertainCount >= 2 ||
     (latestRecord?.status === "unknown" &&
       angleWarningTerms.some((term) => latestRecord.reason?.includes(term)));
   const reminderCooldownRemainingMinutes = lastReminder
@@ -200,7 +222,7 @@ export default function SupervisePage() {
     Math.ceil((awayCooldownUntil - Date.now()) / 1000)
   );
 
-  const playBeep = useCallback(async () => {
+  const playBeep = useCallback(async (pattern: BeepPattern = "single") => {
     const AudioContextClass =
       window.AudioContext ?? (window as WebAudioWindow).webkitAudioContext;
     if (!AudioContextClass) {
@@ -208,31 +230,49 @@ export default function SupervisePage() {
     }
 
     const audioContext = new AudioContextClass();
-    const oscillator = audioContext.createOscillator();
-    const gain = audioContext.createGain();
-    const now = audioContext.currentTime;
-
-    oscillator.type = "sine";
-    oscillator.frequency.setValueAtTime(880, now);
-    gain.gain.setValueAtTime(0.0001, now);
-    gain.gain.exponentialRampToValueAtTime(0.3, now + 0.03);
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.58);
-
-    oscillator.connect(gain);
-    gain.connect(audioContext.destination);
 
     if (audioContext.state === "suspended") {
       await audioContext.resume();
     }
 
-    oscillator.start(now);
-    oscillator.stop(now + 0.6);
+    const beepCount = pattern === "triple" ? 3 : 1;
+    const duration = 0.6;
+    const gap = 0.2;
 
-    await new Promise<void>((resolve) => {
-      oscillator.onended = () => {
-        void audioContext.close();
-        resolve();
+    await new Promise<void>((resolve, reject) => {
+      let endedCount = 0;
+      const finishOne = () => {
+        endedCount += 1;
+        if (endedCount === beepCount) {
+          window.setTimeout(() => {
+            void audioContext.close();
+            resolve();
+          }, 50);
+        }
       };
+
+      try {
+        for (let index = 0; index < beepCount; index += 1) {
+          const oscillator = audioContext.createOscillator();
+          const gain = audioContext.createGain();
+          const startAt = audioContext.currentTime + index * (duration + gap);
+
+          oscillator.type = "sine";
+          oscillator.frequency.setValueAtTime(880, startAt);
+          gain.gain.setValueAtTime(0.0001, startAt);
+          gain.gain.exponentialRampToValueAtTime(0.3, startAt + 0.03);
+          gain.gain.exponentialRampToValueAtTime(0.0001, startAt + duration - 0.02);
+
+          oscillator.connect(gain);
+          gain.connect(audioContext.destination);
+          oscillator.onended = finishOne;
+          oscillator.start(startAt);
+          oscillator.stop(startAt + duration);
+        }
+      } catch (error) {
+        void audioContext.close();
+        reject(error);
+      }
     });
 
     return true;
@@ -269,11 +309,41 @@ export default function SupervisePage() {
     }
   }, []);
 
-  const playReminderAudio = useCallback(async (text: string) => {
-    const beepPlayed = await playBeep();
-    speak(text);
-    return beepPlayed;
-  }, [playBeep, speak]);
+  const playReminderAudio = useCallback(
+    async (reminderType: ReminderType, text: string) => {
+      const pattern: BeepPattern = reminderType === "away" ? "triple" : "single";
+      try {
+        const beepPlayed = await playBeep(pattern);
+        if (beepPlayed) {
+          setLastAudioResult(
+            reminderType === "away" ? "WebAudio 三声蜂鸣播放成功" : "WebAudio 单声蜂鸣播放成功"
+          );
+          return true;
+        }
+      } catch (error) {
+        setLastAudioResult(
+          `WebAudio 播放失败：${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+
+      try {
+        await playInlineWav();
+        setLastAudioResult("Audio 标签蜂鸣播放成功");
+        return true;
+      } catch (error) {
+        setLastAudioResult(
+          `Audio 标签播放失败：${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+
+      const speechStarted = speak(text);
+      setLastAudioResult(
+        speechStarted ? "蜂鸣失败，已尝试 TTS 兜底" : "蜂鸣和 TTS 均未启动，请检查媒体音量"
+      );
+      return speechStarted;
+    },
+    [playBeep, playInlineWav, speak]
+  );
 
   const testReminderSound = useCallback(async () => {
     const nextSteps: AudioTestStep[] = [];
@@ -290,6 +360,7 @@ export default function SupervisePage() {
     console.info("[提醒声音测试] 开始安卓兼容播放测试");
     setAudioTestMessage("");
     setAudioTestSteps([]);
+    setLastAudioResult("正在测试提醒声音");
     let webAudioOk = false;
     let audioTagOk = false;
 
@@ -302,6 +373,7 @@ export default function SupervisePage() {
           ? { label: "WebAudio", status: "success", detail: "已完成播放" }
           : { label: "WebAudio", status: "failed", detail: "当前浏览器不支持 Web Audio API" }
       );
+      setLastAudioResult(beepPlayed ? "测试：WebAudio 蜂鸣播放成功" : "测试：WebAudio 不支持");
     } catch (error) {
       console.error("[提醒声音测试] WebAudio 播放失败", error);
       updateStep({
@@ -309,6 +381,9 @@ export default function SupervisePage() {
         status: "failed",
         detail: error instanceof Error ? error.message : String(error)
       });
+      setLastAudioResult(
+        `测试：WebAudio 播放失败：${error instanceof Error ? error.message : String(error)}`
+      );
     }
 
     if (!webAudioOk) {
@@ -317,6 +392,7 @@ export default function SupervisePage() {
         await playInlineWav();
         audioTagOk = true;
         updateStep({ label: "Audio标签", status: "success", detail: "已完成播放" });
+        setLastAudioResult("测试：Audio 标签蜂鸣播放成功");
       } catch (error) {
         console.error("[提醒声音测试] Audio 标签播放失败", error);
         updateStep({
@@ -324,6 +400,9 @@ export default function SupervisePage() {
           status: "failed",
           detail: error instanceof Error ? error.message : String(error)
         });
+        setLastAudioResult(
+          `测试：Audio 标签播放失败：${error instanceof Error ? error.message : String(error)}`
+        );
       }
     } else {
       updateStep({ label: "Audio标签", status: "skipped", detail: "WebAudio 已成功，未继续测试" });
@@ -336,6 +415,7 @@ export default function SupervisePage() {
           ? { label: "TTS", status: "success", detail: "已尝试 speechSynthesis 朗读" }
           : { label: "TTS", status: "failed", detail: "speechSynthesis 不可用或启动失败" }
       );
+      setLastAudioResult(speechStarted ? "测试：已尝试 TTS 兜底" : "测试：声音播放均未启动");
     } else {
       updateStep({ label: "TTS", status: "skipped", detail: "前置提示音已成功，未继续测试" });
     }
@@ -367,6 +447,12 @@ export default function SupervisePage() {
 
     const defaultInterval = defaultIntervalForNow();
     const highInterval = highIntervalForCurrentPlan();
+    const startupActive = Date.now() - startedAtRef.current.getTime() < startupSupervisionMs;
+    if (startupActive) {
+      applyInterval(highInterval, reminderTypeForRecord(latest) ? "abnormal" : "normal");
+      return;
+    }
+
     const recentStudyingCount = [...nextRecords]
       .reverse()
       .findIndex((record) => record.status !== "studying");
@@ -420,7 +506,7 @@ export default function SupervisePage() {
           ? firstReminderTexts[reminderType]
           : repeatReminderTexts[reminderType];
 
-      void playReminderAudio(text);
+      void playReminderAudio(reminderType, text);
       lastReminderAtRef.current[reminderType] = Date.now();
       reminderCountByTypeRef.current[reminderType] = reminderCount + 1;
       if (reminderType === "away") {
@@ -1027,7 +1113,18 @@ export default function SupervisePage() {
             </div>
           </div>
           <div className="rounded-md border border-line bg-white p-4">
-            <div className="text-sm text-muted">当前监督强度</div>
+            <div className="text-sm text-muted">当前模式</div>
+            <div className="mt-1 text-xl font-semibold">
+              {isStartupSupervision ? "启动强监督中" : "正常监督中"}
+            </div>
+            {isStartupSupervision && (
+              <div className="mt-2 text-sm leading-5 text-muted">
+                前5分钟将高频检查，确保孩子在画面内并开始学习。
+              </div>
+            )}
+            <div className="mt-4 border-t border-line pt-3 text-sm text-muted">
+              当前监督强度
+            </div>
             <div className="mt-1 text-2xl font-semibold">
               {intensityLabels[intensity]}
             </div>
@@ -1087,8 +1184,12 @@ export default function SupervisePage() {
             )}
           </div>
           <div className="rounded-md border border-line bg-white p-4">
-            <div className="text-sm font-medium">离座提醒诊断</div>
+            <div className="text-sm font-medium">提醒诊断</div>
             <div className="mt-2 space-y-1 text-sm leading-6 text-muted">
+              <div>当前模式：{currentModeLabel}</div>
+              <div>最近一次识别时间：{latestRecordTime}</div>
+              <div>当前 presence：{presence}</div>
+              <div>当前 learning_state：{learningState}</div>
               <div>当前 away 持续时长：{formatDurationSeconds(awayDurationSeconds)}</div>
               <div>是否满足离座提醒条件：{awayCanRemind ? "是" : "否"}</div>
               <div>
@@ -1097,6 +1198,12 @@ export default function SupervisePage() {
                   ? `是，还需 ${formatDurationSeconds(awayCooldownRemainingSeconds)}`
                   : "否"}
               </div>
+              <div>
+                最近一次提醒类型：
+                {lastReminder ? reminderLabels[lastReminder.type] : "暂无"}
+              </div>
+              <div>最近一次声音播放结果：{lastAudioResult}</div>
+              <div>当前识别间隔：{currentIntervalSeconds}秒</div>
             </div>
           </div>
           <div className="rounded-md border border-line bg-white p-4">
