@@ -32,51 +32,47 @@ const validLearningStates: LearningState[] = [
   "uncertain"
 ];
 
-const awayCorrectionTerms = [
-  "人物",
-  "上半身",
-  "面部",
-  "人脸",
-  "头部",
-  "头肩",
-  "肩膀",
-  "手臂",
-  "双手",
-  "身体",
-  "坐在",
-  "镜头前",
-  "画面中有人"
-];
-
-const personEvidenceTerms = [
-  "人物",
-  "人脸",
-  "头部",
-  "上半身",
-  "头肩",
-  "肩膀",
-  "手臂",
-  "双手",
-  "手部",
-  "身体",
-  "孩子",
-  "学生",
-  "有人",
-  "人在"
+const positivePersonEvidenceTerms = [
+  "画面中有人",
+  "检测到人物",
+  "检测到人脸",
+  "检测到上半身",
+  "检测到手部",
+  "检测到双手",
+  "检测到人体部位",
+  "检测到头部",
+  "检测到肩膀",
+  "检测到手臂",
+  "人仍在画面中",
+  "孩子仍在画面中",
+  "人物在座位上"
 ];
 
 const noPersonTerms = [
   "没有人",
   "无人",
+  "未检测到任何人物",
+  "未检测到任何人脸",
+  "未检测到任何人体",
   "未检测到人物",
   "未见人物",
+  "未见人",
   "未看到人物",
   "没有看到人物",
+  "未发现人物",
+  "未发现人",
   "未检测到人",
   "未看到人",
+  "画面内无人",
   "画面中无人",
+  "座位为空",
+  "座位空置",
   "座位空",
-  "空座位"
+  "空座位",
+  "仅看到桌面",
+  "仅看到纸笔",
+  "只看到桌面",
+  "只看到学习用品"
 ];
 
 const studyObjectTerms = [
@@ -90,6 +86,12 @@ const studyObjectTerms = [
   "学习用品",
   "文具"
 ];
+
+// Post-processing guard cases:
+// 1. "未检测到任何人物，仅看到桌面和纸笔" -> away
+// 2. "未检测到任何人脸，座位空置" -> away
+// 3. "画面中有人，但未看到桌面" -> present + uncertain
+// 4. "检测到上半身，但学习行为不明确" -> present + uncertain
 
 const qwenPrompt = `你是儿童学习监督助手。
 
@@ -253,25 +255,23 @@ async function analyzeWithQwen(image: string) {
   const confidence = Math.min(1, Math.max(0, Number(parsed.confidence ?? 0.5)));
   let reason = String(parsed.reason ?? "Qwen-VL返回结果。").slice(0, 160);
 
-  const hasPersonEvidence = personEvidenceTerms.some((term) => reason.includes(term));
+  const hasPositivePersonEvidence = positivePersonEvidenceTerms.some((term) =>
+    reason.includes(term)
+  );
   const hasNoPersonEvidence = noPersonTerms.some((term) => reason.includes(term));
   const hasOnlyStudyObjects =
-    studyObjectTerms.some((term) => reason.includes(term)) && !hasPersonEvidence;
+    studyObjectTerms.some((term) => reason.includes(term)) && !hasPositivePersonEvidence;
 
-  if (
-    presence === "away" &&
-    !hasNoPersonEvidence &&
-    awayCorrectionTerms.some((term) => reason.includes(term))
-  ) {
+  if (hasNoPersonEvidence || hasOnlyStudyObjects) {
+    presence = "away";
+    learningState = "uncertain";
+    reason = hasOnlyStudyObjects
+      ? "画面中未检测到人物，仅看到桌面或学习用品。"
+      : reason;
+  } else if (presence === "away" && hasPositivePersonEvidence) {
     presence = "present";
     learningState = "uncertain";
     reason = `${reason} 系统修正：画面中有人，不能判定为离座。`;
-  }
-
-  if (presence === "present" && (hasNoPersonEvidence || hasOnlyStudyObjects)) {
-    presence = "away";
-    learningState = "uncertain";
-    reason = "画面中未检测到人物，仅看到桌面或学习用品。";
   }
 
   if (presence === "away") {
