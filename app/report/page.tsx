@@ -17,6 +17,10 @@ type ReportState = {
 
 export default function ReportPage() {
   const [report, setReport] = useState<ReportState | null>(null);
+  const isMockMode =
+    !report ||
+    report.records.length === 0 ||
+    report.records.some((record) => (record.analyze_mode ?? "mock") === "mock");
 
   useEffect(() => {
     const raw = window.sessionStorage.getItem("latest-report");
@@ -27,9 +31,19 @@ export default function ReportPage() {
     <main className="mx-auto flex min-h-screen w-full max-w-4xl flex-col px-5 py-8">
       <div className="mb-6">
         <h1 className="text-3xl font-bold">学习监督报告</h1>
-        <div className="mt-4 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm leading-6 text-warn">
-          当前为测试模式，状态识别为模拟结果，本报告仅用于流程测试，不代表真实学习判断。
-        </div>
+        {report && (
+          <div
+            className={
+              isMockMode
+                ? "mt-4 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm leading-6 text-warn"
+                : "mt-4 rounded-md border border-blue-100 bg-blue-50 p-3 text-sm leading-6 text-muted"
+            }
+          >
+            {isMockMode
+              ? "当前为测试模式，状态识别为模拟结果，本报告仅用于流程测试，不代表真实学习判断。"
+              : "本报告基于AI视觉识别生成，用于帮助家长了解本次学习过程。识别结果仅供参考，可结合实际情况判断。"}
+          </div>
+        )}
         <p className="mt-2 text-muted">本次监督已结束。</p>
       </div>
 
