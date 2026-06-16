@@ -23,6 +23,13 @@ function legacyLearningStateFromStatus(status: StudyStatus): LearningState {
   return "uncertain";
 }
 
+function manualCorrectionReasonFromStatus(status: StudyStatus) {
+  if (status === "studying") return "用户手动标记：当前正在学习。";
+  if (status === "away") return "用户手动标记：当前已离座。";
+  if (status === "unknown") return "用户手动标记：当前在位，但学习状态证据不足。";
+  return "用户手动标记：当前在位，但未确认学习行为。";
+}
+
 function minutesBetween(startTime: string, endTime: string) {
   return Math.max(
     1,
@@ -57,26 +64,34 @@ async function syncSessionRecords(sessionId: string, records: StudyRecord[]) {
 
   if (savedRecords.length > 0) {
     await Promise.all(
-      savedRecords.map((record) =>
-        supabaseAdmin!
+      savedRecords.map((record) => {
+        const updateValues: Record<string, unknown> = {
+          current_frequency_seconds: record.current_frequency_seconds ?? null,
+          frequency_boosted_by_abnormal: record.frequency_boosted_by_abnormal ?? false,
+          frequency_lowered_by_focus: record.frequency_lowered_by_focus ?? false,
+          triggered_reminder: record.triggered_reminder ?? false,
+          reminder_type: record.reminder_type ?? null,
+          reminder_text: record.reminder_text ?? null,
+          error_message: record.error_message ?? null
+        };
+
+        if (record.manual_corrected) {
+          updateValues.status = record.status;
+          updateValues.presence = record.presence ?? (record.status === "away" ? "away" : "present");
+          updateValues.learning_state =
+            record.learning_state ?? legacyLearningStateFromStatus(record.status);
+          updateValues.reason = record.reason ?? manualCorrectionReasonFromStatus(record.status);
+          updateValues.manual_corrected = true;
+          updateValues.correction_source = record.correction_source ?? "user";
+          updateValues.corrected_at = record.corrected_at ?? new Date().toISOString();
+        }
+
+        return supabaseAdmin!
           .from("records")
-          .update({
-            presence: record.presence ?? (record.status === "away" ? "away" : "present"),
-            learning_state: record.learning_state ?? legacyLearningStateFromStatus(record.status),
-            current_frequency_seconds: record.current_frequency_seconds ?? null,
-            frequency_boosted_by_abnormal: record.frequency_boosted_by_abnormal ?? false,
-            frequency_lowered_by_focus: record.frequency_lowered_by_focus ?? false,
-            triggered_reminder: record.triggered_reminder ?? false,
-            reminder_type: record.reminder_type ?? null,
-            reminder_text: record.reminder_text ?? null,
-            error_message: record.error_message ?? null,
-            manual_corrected: record.manual_corrected ?? false,
-            correction_source: record.correction_source ?? null,
-            corrected_at: record.corrected_at ?? null
-          })
+          .update(updateValues)
           .eq("id", record.id)
-          .eq("session_id", sessionId)
-      )
+          .eq("session_id", sessionId);
+      })
     );
   }
 

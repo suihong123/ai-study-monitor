@@ -21,6 +21,13 @@ function learningStateFromStatus(status: StudyStatus): LearningState {
   return "uncertain";
 }
 
+function correctionReasonFromStatus(status: StudyStatus) {
+  if (status === "studying") return "用户手动标记：当前正在学习。";
+  if (status === "away") return "用户手动标记：当前已离座。";
+  if (status === "unknown") return "用户手动标记：当前在位，但学习状态证据不足。";
+  return "用户手动标记：当前在位，但未确认学习行为。";
+}
+
 export async function POST(request: NextRequest) {
   const body = await request.json();
   const auth = await validateSessionRequest(request, body);
@@ -50,6 +57,7 @@ export async function POST(request: NextRequest) {
       status: body.status,
       presence: presenceFromStatus(body.status),
       learning_state: learningStateFromStatus(body.status),
+      reason: correctionReasonFromStatus(body.status),
       manual_corrected: true,
       correction_source: "user",
       corrected_at: new Date().toISOString()

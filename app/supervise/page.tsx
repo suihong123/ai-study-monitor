@@ -685,6 +685,7 @@ export default function SupervisePage() {
       if (!current) return;
       const latest = recordsRef.current[recordsRef.current.length - 1];
       if (!latest?.id) return;
+      const correctionReason = manualCorrectionReasonFromStatus(nextStatus);
 
       const correctedRecords = recordsRef.current.map((record, index) =>
         index === recordsRef.current.length - 1
@@ -693,6 +694,7 @@ export default function SupervisePage() {
               status: nextStatus,
               presence: legacyPresenceFromStatus(nextStatus),
               learning_state: legacyLearningStateFromStatus(nextStatus),
+              reason: correctionReason,
               manual_corrected: true,
               correction_source: "user",
               corrected_at: new Date().toISOString()
@@ -1226,6 +1228,12 @@ export default function SupervisePage() {
                     {record.triggered_reminder ? "已提醒" : "未提醒"}
                     {record.reminder_type && ` / ${reminderLabels[record.reminder_type]}`}
                   </div>
+                  {record.manual_corrected && (
+                    <div className="mt-1 text-xs text-brand">用户已手动标记</div>
+                  )}
+                  {!record.manual_corrected && record.reason?.includes("系统修正") && (
+                    <div className="mt-1 text-xs text-muted">系统修正</div>
+                  )}
                   {record.reason && (
                     <div className="mt-1 text-xs leading-5 text-muted">
                       原因：{record.reason}
@@ -1374,6 +1382,13 @@ function legacyPresenceFromStatus(status: StudyStatus): Presence {
 function legacyLearningStateFromStatus(status: StudyStatus): LearningState {
   if (status === "studying") return "studying";
   return "uncertain";
+}
+
+function manualCorrectionReasonFromStatus(status: StudyStatus) {
+  if (status === "studying") return "用户手动标记：当前正在学习。";
+  if (status === "away") return "用户手动标记：当前已离座。";
+  if (status === "unknown") return "用户手动标记：当前在位，但学习状态证据不足。";
+  return "用户手动标记：当前在位，但未确认学习行为。";
 }
 
 function MetricPill({ label, value }: { label: string; value: string }) {
