@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { CameraPreview } from "@/components/CameraPreview";
+import { ReportCard } from "@/components/ReportCard";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Timer } from "@/components/Timer";
 import { calculateLearningInsights, calculateStats } from "@/lib/stats";
@@ -11,6 +12,7 @@ import {
   type AccessCode,
   type LearningState,
   type Presence,
+  type ReportLevel,
   type ReminderType,
   type StudyRecord,
   type StudySession,
@@ -29,6 +31,16 @@ type LastReminder = {
   type: ReminderType;
   text: string;
   timestamp: number;
+};
+
+type ReportState = {
+  stats: ReturnType<typeof calculateStats>;
+  summary: string;
+  conclusion: string;
+  parentAdvice: string;
+  trend: Record<string, string> | null;
+  records: StudyRecord[];
+  reportLevel: ReportLevel;
 };
 
 const reminderLabels: Record<ReminderType, string> = {
@@ -52,7 +64,7 @@ const startupSupervisionMs = 5 * 60 * 1000;
 
 const correctionButtons: Array<{ status: StudyStatus; label: string }> = [
   { status: "studying", label: "我在学习" },
-  { status: "unknown", label: "证据不足" },
+  { status: "unknown", label: "无法判断" },
   { status: "away", label: "我离座了" }
 ];
 
@@ -169,6 +181,7 @@ export default function SupervisePage() {
   const [awayCanRemind, setAwayCanRemind] = useState(false);
   const [awayCooldownUntil, setAwayCooldownUntil] = useState(0);
   const [lastAudioResult, setLastAudioResult] = useState("暂无声音播放记录");
+  const [completedReport, setCompletedReport] = useState<ReportState | null>(null);
 
   const elapsedMinutes = Math.floor(elapsedSeconds / 60);
   const todayRemainingMinutes = Math.max(
@@ -824,18 +837,17 @@ export default function SupervisePage() {
       });
       const report = await reportResponse.json();
 
-      window.sessionStorage.setItem(
-        "latest-report",
-        JSON.stringify({
-          stats: report.stats ?? finalStats,
-          summary: report.summary ?? "本次学习报告已生成。",
-          conclusion: report.conclusion ?? "本次学习报告已生成。",
-          parentAdvice: report.parentAdvice ?? "建议继续观察孩子的学习节奏。",
-          trend: report.trend ?? null,
-          records: finalRecords,
-          reportLevel: activeSupervision.accessCode.report_level
-        })
-      );
+      const reportState: ReportState = {
+        stats: report.stats ?? finalStats,
+        summary: report.summary ?? "本次学习报告已生成。",
+        conclusion: report.conclusion ?? "本次学习报告已生成。",
+        parentAdvice: report.parentAdvice ?? "建议继续观察孩子的学习节奏。",
+        trend: report.trend ?? null,
+        records: finalRecords,
+        reportLevel: activeSupervision.accessCode.report_level
+      };
+
+      window.sessionStorage.setItem("latest-report", JSON.stringify(reportState));
 
       await fetch("/api/access-code", {
         method: "PATCH",
@@ -852,12 +864,15 @@ export default function SupervisePage() {
           sessionToken: activeSupervision.session.session_token
         })
       });
+
+      window.sessionStorage.removeItem("current-supervision");
+      setCurrent(null);
+      setCompletedReport(reportState);
     } finally {
       void releaseWakeLock();
       streamRef.current?.getTracks().forEach((track) => track.stop());
-      router.push("/report");
     }
-  }, [current, releaseWakeLock, router]);
+  }, [current, releaseWakeLock]);
 
   useEffect(() => {
     const raw = window.sessionStorage.getItem("current-supervision");
@@ -1022,6 +1037,56 @@ export default function SupervisePage() {
     }
   }, [current, finish, todayRemainingMinutes, totalRemainingMinutes]);
 
+  if (completedReport) {
+    const isMockMode =
+      completedReport.records.length === 0 ||
+      completedReport.records.some((record) => (record.analyze_mode ?? "mock") === "mock");
+
+    return (
+      <main className="mx-auto flex min-h-screen w-full max-w-4xl flex-col px-5 py-8">
+        <div className="mb-6">
+          <h1 className="text-3xl font-bold">学习监督报告</h1>
+          <div
+            className={
+              isMockMode
+                ? "mt-4 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm leading-6 text-warn"
+                : "mt-4 rounded-md border border-blue-100 bg-blue-50 p-3 text-sm leading-6 text-muted"
+            }
+          >
+            {isMockMode
+              ? "当前为测试模式，状态识别为模拟结果，本报告仅用于流程测试，不代表真实学习判断。"
+              : "本报告基于AI视觉识别生成，用于帮助家长了解本次学习过程。识别结果仅供参考，可结合实际情况判断。"}
+          </div>
+          <p className="mt-2 text-muted">本次监督已结束，报告已生成。</p>
+          <div className="mt-4 flex flex-col gap-2 sm:flex-row">
+            <button
+              type="button"
+              onClick={() => router.push("/report")}
+              className="h-11 rounded-md bg-brand px-4 font-semibold text-white"
+            >
+              查看完整报告
+            </button>
+            <button
+              type="button"
+              onClick={() => router.push("/")}
+              className="h-11 rounded-md border border-line px-4 font-medium"
+            >
+              返回首页
+            </button>
+          </div>
+        </div>
+        <ReportCard
+          stats={completedReport.stats}
+          conclusion={completedReport.conclusion}
+          parentAdvice={completedReport.parentAdvice}
+          records={completedReport.records}
+          reportLevel={completedReport.reportLevel}
+          trend={completedReport.trend}
+        />
+      </main>
+    );
+  }
+
   return (
     <main className="mx-auto min-h-screen w-full max-w-5xl px-4 py-5">
       <div className="mb-4 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm leading-6 text-warn">
@@ -1057,7 +1122,7 @@ export default function SupervisePage() {
         )}
       </div>
       <div className="mb-4 rounded-md border border-blue-100 bg-blue-50 p-3 text-sm leading-6 text-muted">
-        学习过程会自动生成报告，包括学习时长、证据不足、离座和提醒记录。
+        学习过程会自动生成报告，包括学习时长、无法判断、离座和提醒记录。
       </div>
       <div className="mb-4 flex items-center justify-between gap-3">
         <div>
@@ -1082,7 +1147,7 @@ export default function SupervisePage() {
           )}
           {shouldShowAngleWarning && (
             <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm leading-6 text-warn">
-              <div className="font-medium">当前画面证据不足，请调整手机角度。</div>
+              <div className="font-medium">当前画面无法判断，请调整手机角度。</div>
               <div className="mt-1">建议调整手机位置，让画面同时看到：</div>
               <ul className="mt-1 list-inside list-disc">
                 <li>孩子上半身</li>
@@ -1159,18 +1224,18 @@ export default function SupervisePage() {
             <div className="text-sm font-medium">学习时长拆分</div>
             <div className="mt-3 grid grid-cols-3 gap-2 text-sm">
               <MetricPill label="有效学习" value={`${learningInsights.studyingMinutes}分钟`} />
-              <MetricPill label="证据不足" value={`${learningInsights.uncertainMinutes}分钟`} />
+              <MetricPill label="无法判断" value={`${learningInsights.uncertainMinutes}分钟`} />
               <MetricPill label="离座时长" value={`${learningInsights.abnormalMinutes}分钟`} />
             </div>
             <div className="mt-3 text-xs leading-5 text-muted">
-              学习时长根据AI识别结果统计，证据不足状态不计入有效学习或离座时长。
+              学习时长根据AI识别结果统计，无法判断状态不计入有效学习或离座时长。
             </div>
           </div>
           <div className="rounded-md border border-line bg-white p-4">
             <div className="text-sm font-medium">学习状态分布</div>
             <div className="mt-3 space-y-3">
               <ProgressRow label="学习中" value={learningInsights.studyingPercent} color="bg-brand" />
-              <ProgressRow label="证据不足" value={learningInsights.uncertainPercent} color="bg-warn" />
+              <ProgressRow label="无法判断" value={learningInsights.uncertainPercent} color="bg-warn" />
               <ProgressRow label="离座" value={learningInsights.awayPercent} color="bg-alert" />
             </div>
           </div>
@@ -1377,7 +1442,7 @@ function displayStateText(record: StudyRecord) {
   const currentLearningState = record.learning_state ?? legacyLearningStateFromStatus(record.status);
   if (currentPresence === "away") return "离座";
   if (currentLearningState === "studying") return "在位 · 学习中";
-  return "在位 · 证据不足";
+  return "在位 · 无法判断";
 }
 
 function legacyPresenceFromStatus(status: StudyStatus): Presence {
@@ -1392,7 +1457,7 @@ function legacyLearningStateFromStatus(status: StudyStatus): LearningState {
 function manualCorrectionReasonFromStatus(status: StudyStatus) {
   if (status === "studying") return "用户手动标记：当前正在学习。";
   if (status === "away") return "用户手动标记：当前已离座。";
-  if (status === "unknown") return "用户手动标记：当前在位，但学习状态证据不足。";
+  if (status === "unknown") return "用户手动标记：当前在位，但学习状态无法判断。";
   return "用户手动标记：当前在位，但未确认学习行为。";
 }
 

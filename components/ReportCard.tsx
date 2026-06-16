@@ -35,6 +35,8 @@ export function ReportCard({
     : isMockMode
     ? "当前为测试模式，本次报告用于检查监督流程、摄像头角度和报告展示效果。"
     : buildOneLineSummary(stats);
+  const keyConcern = buildKeyConcern(stats, insufficientData);
+  const nextSuggestion = buildNextSuggestion(stats, insufficientData);
 
   const coreItems = [
     ["总监督时长", `${stats.totalMinutes}分钟`],
@@ -42,12 +44,12 @@ export function ReportCard({
     ["专注率", records.length >= 5 ? `${stats.focusRate}%` : "数据采集中"],
     ["离座次数", `${stats.awayCount}次`],
     ["提醒次数", `${stats.reminderCount}次`],
-    ["最长连续专注时长", `${stats.longestFocusMinutes}分钟`]
+    ["最长连续学习", `${stats.longestFocusMinutes}分钟`]
   ];
 
   const statusItems = [
     ["学习中", stats.studyingCount],
-    ["证据不足", stats.uncertainCount],
+    ["无法判断", stats.uncertainCount],
     ["离座", stats.awayCount]
   ];
 
@@ -55,12 +57,13 @@ export function ReportCard({
     <section className="w-full space-y-5">
       <div className="rounded-md border border-line bg-white p-5">
         <h2 className="text-xl font-semibold">学习表现总览</h2>
+        <p className="mt-3 text-lg leading-8 text-ink">{summary}</p>
         <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-4">
           {[
             ["专注率", records.length >= 5 ? `${learningInsights.focusRate}%` : "数据采集中"],
             ["学习评价", learningInsights.grade],
             ["有效学习", `${learningInsights.studyingMinutes}分钟`],
-            ["证据不足", `${learningInsights.uncertainCount}次`],
+            ["无法判断", `${learningInsights.uncertainCount}次`],
             ["离座", `${learningInsights.awayCount}次`],
             ["提醒", `${stats.reminderCount}次`]
           ].map(([label, value]) => (
@@ -70,7 +73,17 @@ export function ReportCard({
             </div>
           ))}
         </div>
-        <div className="mt-4 rounded-md bg-blue-50 p-4">
+        <div className="mt-4 grid gap-3 md:grid-cols-2">
+          <div className="rounded-md bg-blue-50 p-4">
+            <div className="text-sm font-medium text-ink">本次最值得关注</div>
+            <p className="mt-2 text-sm leading-6 text-muted">{keyConcern}</p>
+          </div>
+          <div className="rounded-md bg-panel p-4">
+            <div className="text-sm font-medium text-ink">下次建议</div>
+            <p className="mt-2 text-sm leading-6 text-muted">{nextSuggestion}</p>
+          </div>
+        </div>
+        <div className="mt-3 rounded-md bg-blue-50 p-4">
           <div className="text-sm font-medium text-ink">AI总结</div>
           <p className="mt-2 text-sm leading-6 text-muted">
             {buildInsightSummary(learningInsights)}
@@ -87,7 +100,7 @@ export function ReportCard({
             </span>
           )}
         </div>
-        <p className="mt-3 text-lg leading-8">{summary}</p>
+        <p className="mt-3 text-lg leading-8">{conclusion}</p>
       </div>
 
       <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
@@ -129,7 +142,7 @@ export function ReportCard({
         <h2 className="text-lg font-semibold">学习结论</h2>
         <p className="mt-3 whitespace-pre-line leading-7 text-muted">
           {insufficientData
-            ? "数据量不足，本报告仅供测试。当前不生成专注率结论和学习诊断。"
+            ? "数据量不足，本报告仅供测试。当前不生成学习诊断。"
             : conclusion}
         </p>
       </div>
@@ -208,9 +221,25 @@ export function ReportCard({
 
 function buildOneLineSummary(stats: StudyStats) {
   if (stats.focusRate >= 80) return "本次学习整体稳定，专注状态保持较好。";
-  if (stats.focusRate >= 60) return "本次学习有一定学习行为证据，也存在部分证据不足记录。";
+  if (stats.focusRate >= 60) return "本次学习有一定学习行为证据，也存在部分无法判断记录。";
   if (stats.focusRate >= 40) return "本次明确学习行为占比偏低，建议优化拍摄角度并缩短单次学习时长。";
-  return "本次离座或证据不足较多，建议优先检查学习环境、拍摄角度和任务难度。";
+  return "本次离座或无法判断较多，建议优先检查学习环境、拍摄角度和任务难度。";
+}
+
+function buildKeyConcern(stats: StudyStats, insufficientData: boolean) {
+  if (insufficientData) return "本次数据量偏少，暂时不判断学习表现。";
+  if (stats.awayCount >= 2) return "本次最需要关注的是离座次数偏多。";
+  if (stats.uncertainCount >= 3) return "本次最需要关注的是画面无法判断次数偏多。";
+  if (stats.focusRate >= 80) return "本次整体表现较稳定，建议保持当前学习节奏。";
+  return "本次明确学习行为偏少，建议关注任务难度和学习环境。";
+}
+
+function buildNextSuggestion(stats: StudyStats, insufficientData: boolean) {
+  if (insufficientData) return "下次建议监督满10分钟以上，并确保能看到上半身、双手和桌面。";
+  if (stats.awayCount >= 2) return "下次开始前先准备好水杯、文具和作业材料，减少中途离座。";
+  if (stats.uncertainCount >= 3) return "下次把手机放在侧前方45度，尽量同时拍到上半身、双手和作业区域。";
+  if (stats.focusRate >= 80) return "下次可以继续保持当前节奏，结束后让孩子简短复盘完成情况。";
+  return "下次可以采用25分钟学习加5分钟休息，并减少桌面无关物品。";
 }
 
 function buildInsightSummary(insights: ReturnType<typeof calculateLearningInsights>) {
@@ -224,20 +253,20 @@ function buildInsightSummary(insights: ReturnType<typeof calculateLearningInsigh
     return "本次学习过程中出现多次离座，建议优化学习环境，提前准备好文具、作业材料和水杯。";
   }
   if (insights.uncertainCount >= 3) {
-    return "本次存在多次证据不足记录，建议调整手机角度，确保能看到上半身、双手和作业区域。";
+    return "本次存在多次无法判断记录，建议调整手机角度，确保能看到上半身、双手和作业区域。";
   }
   if (insights.focusRate >= 80) {
     return "本次学习整体表现良好，大部分时间能够看到明确学习行为。";
   }
   if (insights.focusRate >= 70) {
-    return "本次学习基本稳定，建议继续观察证据不足出现的时间段。";
+    return "本次学习基本稳定，建议继续观察无法判断出现的时间段。";
   }
-  return "本次离座或证据不足较多，建议缩短单次学习时长，并优化拍摄角度。";
+  return "本次离座或无法判断较多，建议缩短单次学习时长，并优化拍摄角度。";
 }
 
 function buildKeyEvents(records: StudyRecord[], stats: StudyStats, insufficientData: boolean) {
   const events = [
-    `本次证据不足 ${stats.uncertainCount} 次`,
+    `本次无法判断 ${stats.uncertainCount} 次`,
     `本次离座 ${stats.awayCount} 次`,
     `本次触发提醒 ${stats.reminderCount} 次`,
     `本次共出现 ${stats.awayCount} 次离座状态`,
@@ -272,7 +301,7 @@ function displayStateText(record: StudyRecord) {
   const state = normalizeRecordState(record);
   if (state.presence === "away") return "离座";
   if (state.learningState === "studying") return "在位 · 学习中";
-  return "在位 · 证据不足";
+  return "在位 · 无法判断";
 }
 
 function formatMinute(value: string) {
@@ -289,7 +318,7 @@ function trendTitle(key: string) {
     segmentSuggestion: "是否建议分段学习",
     sevenDayTrend: "最近7天趋势",
     weekOverWeek: "与上周同比",
-    distractionWindow: "证据不足高发时间段",
+    distractionWindow: "无法判断高发时间段",
     learningProfile: "学习状态画像",
     interventionAdvice: "家长干预建议"
   };

@@ -24,7 +24,7 @@ function learningStateFromStatus(status: StudyStatus): LearningState {
 function correctionReasonFromStatus(status: StudyStatus) {
   if (status === "studying") return "用户手动标记：当前正在学习。";
   if (status === "away") return "用户手动标记：当前已离座。";
-  if (status === "unknown") return "用户手动标记：当前在位，但学习状态证据不足。";
+  if (status === "unknown") return "用户手动标记：当前在位，但学习状态无法判断。";
   return "用户手动标记：当前在位，但未确认学习行为。";
 }
 
