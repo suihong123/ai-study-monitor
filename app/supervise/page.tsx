@@ -312,31 +312,36 @@ export default function SupervisePage() {
   const playReminderAudio = useCallback(
     async (reminderType: ReminderType, text: string) => {
       const pattern: BeepPattern = reminderType === "away" ? "triple" : "single";
+      let beepPlayed = false;
       try {
-        const beepPlayed = await playBeep(pattern);
-        if (beepPlayed) {
-          setLastAudioResult(
-            reminderType === "away" ? "WebAudio 三声蜂鸣播放成功" : "WebAudio 单声蜂鸣播放成功"
-          );
-          return true;
-        }
+        beepPlayed = await playBeep(pattern);
       } catch (error) {
         setLastAudioResult(
           `WebAudio 播放失败：${error instanceof Error ? error.message : String(error)}`
         );
       }
 
-      try {
-        await playInlineWav();
-        setLastAudioResult("Audio 标签蜂鸣播放成功");
-        return true;
-      } catch (error) {
-        setLastAudioResult(
-          `Audio 标签播放失败：${error instanceof Error ? error.message : String(error)}`
-        );
+      if (!beepPlayed) {
+        try {
+          await playInlineWav();
+          beepPlayed = true;
+        } catch (error) {
+          setLastAudioResult(
+            `Audio 标签播放失败：${error instanceof Error ? error.message : String(error)}`
+          );
+        }
       }
 
       const speechStarted = speak(text);
+      if (beepPlayed) {
+        const beepText =
+          reminderType === "away" ? "蜂鸣提示成功（三声）" : "蜂鸣提示成功（单声）";
+        setLastAudioResult(
+          speechStarted ? `${beepText}，TTS 已尝试播放` : `${beepText}，TTS 未启动`
+        );
+        return true;
+      }
+
       setLastAudioResult(
         speechStarted ? "蜂鸣失败，已尝试 TTS 兜底" : "蜂鸣和 TTS 均未启动，请检查媒体音量"
       );
