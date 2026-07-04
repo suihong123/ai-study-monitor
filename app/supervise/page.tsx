@@ -55,8 +55,21 @@ const firstReminderTexts: Record<ReminderType, string> = {
 
 const repeatReminderTexts: Record<ReminderType, string> = {
   uncertain: "别忘了手上的题目哦。",
-  away: "请回到座位继续学习。本次离座情况会记录到学习报告中。"
+  away: "已经多次检测到离座，请回到座位继续学习。"
 };
+
+const reminderAudioSources: Record<ReminderType, { first: string; repeat: string }> = {
+  uncertain: {
+    first: "/audio/reminder-uncertain.wav",
+    repeat: "/audio/reminder-uncertain-repeat.wav"
+  },
+  away: {
+    first: "/audio/reminder-away.wav",
+    repeat: "/audio/reminder-away-repeat.wav"
+  }
+};
+
+const reminderTestAudioSource = "/audio/reminder-test.wav";
 
 const reminderCooldownMs = 3 * 60 * 1000;
 const awayDurationReminderMs = 60 * 1000;
@@ -158,6 +171,7 @@ export default function SupervisePage() {
   const initialAnalyzeTimerRef = useRef<number | null>(null);
   const wakeLockRef = useRef<WakeLockSentinel | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
+  const localReminderAudioRef = useRef<HTMLAudioElement | null>(null);
   const speechUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
   const awayStartAtRef = useRef<number | null>(null);
   const lastReminderAtRef = useRef<Partial<Record<ReminderType, number>>>({});
@@ -236,6 +250,51 @@ export default function SupervisePage() {
   const awayCooldownRemainingSeconds = Math.max(
     0,
     Math.ceil((awayCooldownUntil - Date.now()) / 1000)
+  );
+
+  const getLocalReminderAudio = useCallback(() => {
+    let audio = localReminderAudioRef.current;
+    if (!audio) {
+      audio = new Audio(reminderTestAudioSource);
+      audio.preload = "auto";
+      audio.volume = 1;
+      audio.muted = false;
+      audio.setAttribute("playsinline", "true");
+      localReminderAudioRef.current = audio;
+    }
+    return audio;
+  }, []);
+
+  const unlockLocalReminderAudio = useCallback(async () => {
+    const audio = getLocalReminderAudio();
+    const previousMuted = audio.muted;
+    audio.muted = true;
+    try {
+      await audio.play();
+      audio.pause();
+      audio.currentTime = 0;
+      return true;
+    } catch (error) {
+      console.error("[提醒声音] 本地音频解锁失败", error);
+      return false;
+    } finally {
+      audio.muted = previousMuted;
+    }
+  }, [getLocalReminderAudio]);
+
+  const playLocalReminderAudio = useCallback(
+    async (source: string) => {
+      const audio = getLocalReminderAudio();
+      audio.pause();
+      audio.src = source;
+      audio.currentTime = 0;
+      audio.muted = false;
+      audio.volume = 1;
+      audio.load();
+      await audio.play();
+      return true;
+    },
+    [getLocalReminderAudio]
   );
 
   const unlockReminderAudio = useCallback(async () => {
@@ -364,12 +423,22 @@ export default function SupervisePage() {
   }, []);
 
   const playReminderAudio = useCallback(
-    async (reminderType: ReminderType, text: string) => {
+    async (reminderType: ReminderType, text: string, repeated: boolean) => {
       const pattern: BeepPattern = reminderType === "away" ? "triple" : "single";
-      const speechStarted = await speak(text);
-      if (speechStarted) {
-        setLastAudioResult("TTS 语音提醒已开始播放");
-        return true;
+      const localSource = repeated
+        ? reminderAudioSources[reminderType].repeat
+        : reminderAudioSources[reminderType].first;
+
+      try {
+        const localAudioStarted = await playLocalReminderAudio(localSource);
+        if (localAudioStarted) {
+          setLastAudioResult("本地语音提醒已开始播放");
+          return true;
+        }
+      } catch (error) {
+        setLastAudioResult(
+          `本地语音播放失败：${error instanceof Error ? error.message : String(error)}`
+        );
       }
 
       let beepPlayed = false;
@@ -395,14 +464,20 @@ export default function SupervisePage() {
       if (beepPlayed) {
         const beepText =
           reminderType === "away" ? "蜂鸣提示成功（三声）" : "蜂鸣提示成功（单声）";
-        setLastAudioResult(`TTS 未启动，${beepText}`);
+        setLastAudioResult(`本地语音未启动，${beepText}`);
         return true;
       }
 
-      setLastAudioResult("TTS 和蜂鸣均未启动，请检查媒体音量");
+      const speechStarted = await speak(text);
+      if (speechStarted) {
+        setLastAudioResult("本地语音和蜂鸣失败，TTS 已开始播放");
+        return true;
+      }
+
+      setLastAudioResult("本地语音、蜂鸣和 TTS 均未启动，请检查媒体音量");
       return false;
     },
-    [playBeep, playInlineWav, speak]
+    [playBeep, playInlineWav, playLocalReminderAudio, speak]
   );
 
   const testReminderSound = useCallback(async () => {
@@ -421,29 +496,37 @@ export default function SupervisePage() {
     setAudioTestMessage("");
     setAudioTestSteps([]);
     setLastAudioResult("正在测试提醒声音");
+    let localAudioOk = false;
+    let webAudioOk = false;
+    let audioTagOk = false;
+    let speechOk = false;
+
+    try {
+      updateStep({ label: "本地语音", status: "pending", detail: "开始播放预置中文提醒音频" });
+      localAudioOk = await playLocalReminderAudio(reminderTestAudioSource);
+      updateStep({ label: "本地语音", status: "success", detail: "已开始播放" });
+      setLastAudioResult("测试：本地语音提醒已开始播放");
+    } catch (error) {
+      console.error("[提醒声音测试] 本地语音播放失败", error);
+      updateStep({
+        label: "本地语音",
+        status: "failed",
+        detail: error instanceof Error ? error.message : String(error)
+      });
+    }
+
+    if (localAudioOk) {
+      updateStep({ label: "WebAudio", status: "skipped", detail: "本地语音已成功，未触发蜂鸣兜底" });
+      updateStep({ label: "Audio标签", status: "skipped", detail: "本地语音已成功，未触发蜂鸣兜底" });
+      updateStep({ label: "TTS", status: "skipped", detail: "本地语音已成功，未触发 TTS 兜底" });
+      setAudioTestMessage("本地语音提醒正常。实际提醒会优先播放同类音频。");
+      return;
+    }
+
     try {
       await unlockReminderAudio();
     } catch (error) {
-      console.error("[提醒声音测试] 音频环境解锁失败", error);
-    }
-    let speechOk = false;
-    let webAudioOk = false;
-    let audioTagOk = false;
-
-    updateStep({ label: "TTS", status: "pending", detail: "尝试播放中文语音提醒" });
-    speechOk = await speak("这是学习监督提醒声音，请确认音量合适。");
-    updateStep(
-      speechOk
-        ? { label: "TTS", status: "success", detail: "语音已开始播放" }
-        : { label: "TTS", status: "failed", detail: "未检测到语音开始，继续测试蜂鸣兜底" }
-    );
-
-    if (speechOk) {
-      updateStep({ label: "WebAudio", status: "skipped", detail: "TTS 已成功，未触发蜂鸣兜底" });
-      updateStep({ label: "Audio标签", status: "skipped", detail: "TTS 已成功，未触发蜂鸣兜底" });
-      setLastAudioResult("测试：TTS 语音提醒已开始播放");
-      setAudioTestMessage("语音提醒正常。实际提醒会优先使用语音，失败时再播放蜂鸣。");
-      return;
+      console.error("[提醒声音测试] WebAudio 解锁失败", error);
     }
 
     try {
@@ -490,12 +573,26 @@ export default function SupervisePage() {
       updateStep({ label: "Audio标签", status: "skipped", detail: "WebAudio 已成功，未继续测试" });
     }
 
+    if (!webAudioOk && !audioTagOk) {
+      updateStep({ label: "TTS", status: "pending", detail: "蜂鸣失败，尝试系统语音兜底" });
+      speechOk = await speak("这是学习监督提醒声音，请确认音量合适。");
+      updateStep(
+        speechOk
+          ? { label: "TTS", status: "success", detail: "系统语音已开始播放" }
+          : { label: "TTS", status: "failed", detail: "系统语音未启动" }
+      );
+    } else {
+      updateStep({ label: "TTS", status: "skipped", detail: "蜂鸣兜底已成功，未继续测试" });
+    }
+
     setAudioTestMessage(
       webAudioOk || audioTagOk
-        ? "TTS 未启动，蜂鸣兜底正常。请检查媒体音量，不是铃声音量。"
-        : "TTS 和蜂鸣都未成功，请关闭静音模式、调高媒体音量后重试。"
+        ? "本地语音未启动，蜂鸣兜底正常。请检查媒体音量，不是铃声音量。"
+        : speechOk
+        ? "本地语音和蜂鸣失败，TTS 兜底已启动。"
+        : "本地语音、蜂鸣和 TTS 都未成功，请关闭静音模式、调高媒体音量后重试。"
     );
-  }, [playBeep, playInlineWav, speak, unlockReminderAudio]);
+  }, [playBeep, playInlineWav, playLocalReminderAudio, speak, unlockReminderAudio]);
 
   const applyInterval = useCallback((nextInterval: number, reason: FrequencyReason) => {
     const boundedInterval = Math.min(nextInterval, maxAnalyzeIntervalSeconds);
@@ -585,7 +682,7 @@ export default function SupervisePage() {
 
       reminderPlayingRef.current[reminderType] = true;
       try {
-        const played = await playReminderAudio(reminderType, text);
+        const played = await playReminderAudio(reminderType, text, reminderCount > 0);
         if (!played) return null;
 
         const timestamp = Date.now();
@@ -1026,8 +1123,14 @@ export default function SupervisePage() {
   useEffect(() => {
     return () => {
       const audioContext = audioContextRef.current;
+      const localAudio = localReminderAudioRef.current;
       audioContextRef.current = null;
+      localReminderAudioRef.current = null;
       speechUtteranceRef.current = null;
+      if (localAudio) {
+        localAudio.pause();
+        localAudio.removeAttribute("src");
+      }
       window.speechSynthesis?.cancel();
       if (audioContext && audioContext.state !== "closed") {
         void audioContext.close();
@@ -1430,6 +1533,7 @@ export default function SupervisePage() {
               <button
                 type="button"
                 onClick={() => {
+                  void unlockLocalReminderAudio();
                   void unlockReminderAudio();
                   window.sessionStorage.setItem(`placement-confirmed-${current.session.id}`, "true");
                   setPlacementConfirmed(true);
@@ -1453,6 +1557,7 @@ export default function SupervisePage() {
               <button
                 type="button"
                 onClick={() => {
+                  void unlockLocalReminderAudio();
                   void unlockReminderAudio();
                   setNeedsRecoveryDecision(false);
                 }}
