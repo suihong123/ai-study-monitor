@@ -4,6 +4,7 @@ import { FormEvent, useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import type { AccessCode, AccessCodeStatus, PlanType } from "@/types";
 import { statusLabels } from "@/lib/access-code-status";
+import { appVersion } from "@/lib/version";
 
 type AdminAccessCode = AccessCode & {
   sessions?: Array<{
@@ -347,6 +348,11 @@ export default function AdminPage() {
       <div className="mb-5">
         <h1 className="text-3xl font-bold">管理后台</h1>
         <p className="mt-2 text-muted">用量观测、成本统计、错误定位和风险记录。</p>
+        <div className="mt-3 rounded-md border border-line bg-white p-3 text-sm leading-6 text-muted">
+          <span className="font-semibold text-ink">{appVersion.version}</span>
+          <span className="ml-3">更新时间：{appVersion.updatedAt}</span>
+          <span className="ml-3">{appVersion.summary}</span>
+        </div>
       </div>
 
       <section className="mb-5 rounded-md border border-line bg-white p-4">

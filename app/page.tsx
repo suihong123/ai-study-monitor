@@ -3,6 +3,7 @@
 import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
 import { getDeviceId } from "@/lib/device";
+import { appVersion } from "@/lib/version";
 import type { AccessCode, StudySession } from "@/types";
 
 type CurrentSupervision = {
@@ -142,6 +143,30 @@ export default function HomePage() {
             {loading ? "正在验证" : "开始监督"}
           </button>
         </form>
+
+        <section className="mt-4 rounded-md border border-line bg-white p-4 text-sm leading-6 text-muted">
+          <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <span className="font-semibold text-ink">当前版本：{appVersion.version}</span>
+              <span className="ml-0 block sm:ml-3 sm:inline">
+                更新时间：{appVersion.updatedAt}
+              </span>
+            </div>
+          </div>
+          <p className="mt-2">{appVersion.summary}</p>
+          <details className="mt-2">
+            <summary className="cursor-pointer font-medium text-brand">
+              查看更新说明
+            </summary>
+            <ul className="mt-2 grid gap-1 pl-4">
+              {appVersion.highlights.map((item) => (
+                <li key={item} className="list-disc">
+                  {item}
+                </li>
+              ))}
+            </ul>
+          </details>
+        </section>
       </section>
 
       <section className="mb-4 rounded-md border border-line bg-white p-4 text-sm leading-7 text-muted">
