@@ -28,7 +28,7 @@ function buildBasicConclusion(stats: ReturnType<typeof calculateStats>) {
 function buildParentAdvice(stats: ReturnType<typeof calculateStats>) {
   const advice: string[] = [];
   if (stats.awayCount >= 2) {
-    advice.push("本次离座次数较多，建议家长关注学习前是否准备充分，例如水杯、文具、作业材料。");
+    advice.push("本次离座识别记录较多，建议家长关注学习前是否准备充分，例如水杯、文具、作业材料。");
   }
   if (stats.uncertainCount >= 3) {
     advice.push("本次证据不足记录较多，建议调整手机角度，确保能看到孩子上半身、双手和作业区域。");

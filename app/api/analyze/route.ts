@@ -35,30 +35,52 @@ const validLearningStates: LearningState[] = [
 const positivePersonEvidenceTerms = [
   "画面中有人",
   "检测到人脸",
+  "检测到人物",
   "检测到上半身",
   "检测到手部",
   "检测到人体部位",
-  "孩子仍在座位上"
+  "检测到头部",
+  "检测到肩膀",
+  "检测到手臂",
+  "检测到双手",
+  "孩子仍在座位上",
+  "孩子在座位上",
+  "孩子坐在",
+  "人物在座位上",
+  "人物仍在",
+  "人仍在",
+  "坐在书桌前",
+  "位于书桌前",
+  "正在写字",
+  "正在阅读",
+  "正在做题",
+  "手部",
+  "双手",
+  "手臂",
+  "上半身",
+  "头部",
+  "肩膀",
+  "身体部分"
 ];
 
 const noPersonTerms = [
-  "没有人",
+  "画面中没有人",
+  "画面内没有人",
+  "座位上没有人",
   "无人",
   "无人物",
   "未检测到任何人物",
-  "未检测到任何人脸",
   "未检测到任何人体",
   "未检测到人物",
-  "未检测到人脸",
   "未见人物",
-  "未见人",
+  "未见任何人",
   "未看到人物",
-  "没有看到人物",
+  "没有看到任何人物",
   "没有任何人物出现",
   "未发现人物",
-  "未发现人",
-  "未检测到人",
-  "未看到人",
+  "未发现任何人",
+  "未检测到任何人",
+  "未看到任何人",
   "画面内无人",
   "画面中无人",
   "画面无人",
@@ -78,21 +100,6 @@ const noPersonTerms = [
   "只看到椅子",
   "只看到桌面",
   "只看到学习用品"
-];
-
-const studyObjectTerms = [
-  "桌面",
-  "书桌",
-  "桌子",
-  "椅子",
-  "桌椅",
-  "纸",
-  "笔",
-  "作业本",
-  "书本",
-  "屏幕",
-  "学习用品",
-  "文具"
 ];
 
 // Post-processing guard cases:
@@ -268,15 +275,10 @@ async function analyzeWithQwen(image: string) {
     reason.includes(term)
   );
   const hasNoPersonEvidence = noPersonTerms.some((term) => reason.includes(term));
-  const hasOnlyStudyObjects =
-    studyObjectTerms.some((term) => reason.includes(term)) && !hasPositivePersonEvidence;
 
-  if (hasNoPersonEvidence || hasOnlyStudyObjects) {
+  if (hasNoPersonEvidence) {
     presence = "away";
     learningState = "uncertain";
-    reason = hasOnlyStudyObjects
-      ? "画面中未检测到人物，仅看到桌面或学习用品。"
-      : reason;
   } else if (presence === "away" && hasPositivePersonEvidence) {
     presence = "present";
     learningState = "uncertain";

@@ -30,6 +30,7 @@ export function ReportCard({
     stats.studyingCount +
     stats.uncertainCount +
     stats.awayCount;
+  const awayEventCount = countAwayEvents(records);
   const summary = insufficientData
     ? "数据量不足，本报告仅供测试。请完成至少10分钟监督并产生5条以上识别记录后再查看学习诊断。"
     : isMockMode
@@ -42,7 +43,7 @@ export function ReportCard({
     ["总监督时长", `${stats.totalMinutes}分钟`],
     ["有效学习时长", `${stats.effectiveMinutes}分钟`],
     ["专注率", records.length >= 5 ? `${stats.focusRate}%` : "数据采集中"],
-    ["离座次数", `${stats.awayCount}次`],
+    ["离座事件", `${awayEventCount}次`],
     ["提醒次数", `${stats.reminderCount}次`],
     ["最长连续学习", `${stats.longestFocusMinutes}分钟`]
   ];
@@ -64,7 +65,7 @@ export function ReportCard({
             ["学习评价", learningInsights.grade],
             ["有效学习", `${learningInsights.studyingMinutes}分钟`],
             ["无法判断", `${learningInsights.uncertainCount}次`],
-            ["离座", `${learningInsights.awayCount}次`],
+            ["离座记录", `${learningInsights.awayCount}次`],
             ["提醒", `${stats.reminderCount}次`]
           ].map(([label, value]) => (
             <div key={label} className="rounded-md bg-panel p-3">
@@ -228,7 +229,7 @@ function buildOneLineSummary(stats: StudyStats) {
 
 function buildKeyConcern(stats: StudyStats, insufficientData: boolean) {
   if (insufficientData) return "本次数据量偏少，暂时不判断学习表现。";
-  if (stats.awayCount >= 2) return "本次最需要关注的是离座次数偏多。";
+  if (stats.awayCount >= 2) return "本次最需要关注的是离座识别记录偏多。";
   if (stats.uncertainCount >= 3) return "本次最需要关注的是画面无法判断次数偏多。";
   if (stats.focusRate >= 80) return "本次整体表现较稳定，建议保持当前学习节奏。";
   return "本次明确学习行为偏少，建议关注任务难度和学习环境。";
@@ -267,9 +268,9 @@ function buildInsightSummary(insights: ReturnType<typeof calculateLearningInsigh
 function buildKeyEvents(records: StudyRecord[], stats: StudyStats, insufficientData: boolean) {
   const events = [
     `本次无法判断 ${stats.uncertainCount} 次`,
-    `本次离座 ${stats.awayCount} 次`,
+    `本次离座事件 ${countAwayEvents(records)} 次`,
+    `本次离座识别记录 ${stats.awayCount} 条`,
     `本次触发提醒 ${stats.reminderCount} 次`,
-    `本次共出现 ${stats.awayCount} 次离座状态`,
     `最集中离座时段：${findAbnormalWindow(records)}`,
     stats.longestFocusMinutes > 0
       ? `最长连续专注时长约 ${stats.longestFocusMinutes} 分钟`
@@ -284,6 +285,19 @@ function buildKeyEvents(records: StudyRecord[], stats: StudyStats, insufficientD
   }
 
   return events;
+}
+
+function countAwayEvents(records: StudyRecord[]) {
+  let count = 0;
+  let previousAway = false;
+
+  records.forEach((record) => {
+    const isAway = normalizeRecordState(record).presence === "away";
+    if (isAway && !previousAway) count += 1;
+    previousAway = isAway;
+  });
+
+  return count;
 }
 
 function findAbnormalWindow(records: StudyRecord[]) {
