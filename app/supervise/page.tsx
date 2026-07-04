@@ -71,7 +71,10 @@ const reminderAudioSources: Record<ReminderType, { first: string; repeat: string
 
 const reminderTestAudioSource = "/audio/reminder-test.wav";
 
-const reminderCooldownMs = 3 * 60 * 1000;
+const normalReminderCooldownMs = 3 * 60 * 1000;
+const stableReminderCooldownMs = 5 * 60 * 1000;
+const uncertainMinimumCooldownMs = 90 * 1000;
+const awayMinimumCooldownMs = 60 * 1000;
 const awayDurationReminderMs = 60 * 1000;
 const startupSupervisionMs = 5 * 60 * 1000;
 
@@ -163,12 +166,13 @@ export default function SupervisePage() {
   const startedAtRef = useRef<Date>(new Date());
   const finishingRef = useRef(false);
   const analyzingRef = useRef(false);
+  const analyzeRef = useRef<() => Promise<void>>(async () => {});
   const intensityUntilRef = useRef(0);
   const abnormalLockRef = useRef(false);
   const aiCallCountRef = useRef(0);
   const analyzeFailureCountRef = useRef(0);
   const frequencyReasonRef = useRef<FrequencyReason>("normal");
-  const initialAnalyzeTimerRef = useRef<number | null>(null);
+  const calibrationAnalyzeTimersRef = useRef<number[]>([]);
   const wakeLockRef = useRef<WakeLockSentinel | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const localReminderAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -193,10 +197,10 @@ export default function SupervisePage() {
   const [needsRecoveryDecision, setNeedsRecoveryDecision] = useState(false);
   const [audioTestMessage, setAudioTestMessage] = useState("");
   const [audioTestSteps, setAudioTestSteps] = useState<AudioTestStep[]>([]);
+  const [audioReady, setAudioReady] = useState(false);
   const [wakeLockMessage, setWakeLockMessage] = useState("");
   const [awayDurationSeconds, setAwayDurationSeconds] = useState(0);
   const [awayCanRemind, setAwayCanRemind] = useState(false);
-  const [awayCooldownUntil, setAwayCooldownUntil] = useState(0);
   const [lastAudioResult, setLastAudioResult] = useState("暂无声音播放记录");
   const [completedReport, setCompletedReport] = useState<ReportState | null>(null);
 
@@ -224,7 +228,14 @@ export default function SupervisePage() {
       })
     : "暂无";
   const isStartupSupervision = elapsedSeconds < startupSupervisionMs / 1000;
-  const currentModeLabel = isStartupSupervision ? "启动强监督" : "正常监督";
+  const currentModeLabel =
+    elapsedSeconds < 2 * 60
+      ? "启动校准"
+      : elapsedSeconds < 5 * 60
+      ? "启动强监督"
+      : elapsedSeconds < 10 * 60
+      ? "动态观察"
+      : "正常监督";
   const consecutiveUncertainCount = [...records]
     .reverse()
     .findIndex((record) => {
@@ -239,18 +250,42 @@ export default function SupervisePage() {
     recentUncertainCount >= 2 ||
     (latestRecord?.status === "unknown" &&
       angleWarningTerms.some((term) => latestRecord.reason?.includes(term)));
-  const reminderCooldownRemainingMinutes = lastReminder
+  const latestRecognitionAt = latestRecord
+    ? new Date(latestRecord.timestamp).getTime()
+    : 0;
+  const recognitionStale =
+    latestRecognitionAt > 0 &&
+    Date.now() - latestRecognitionAt >
+      Math.max(90, currentIntervalSeconds * 2 + 15) * 1000;
+  const cameraActive = Boolean(
+    streamRef.current?.getVideoTracks().some((track) => track.readyState === "live")
+  );
+  const supervisionHealth = !pageActive
+    ? "监督已暂停"
+    : cameraError
+    ? "需要检查"
+    : recognitionStale
+    ? "识别可能暂停"
+    : records.length === 0
+    ? "正在建立监督"
+    : "监督运行正常";
+  const pictureQuality = records.length === 0
+    ? "检查中"
+    : shouldShowAngleWarning
+    ? "建议调整角度"
+    : "画面良好";
+  const reminderCooldownRemainingSeconds = lastReminder
     ? Math.max(
         0,
         Math.ceil(
-          (reminderCooldownMs - (Date.now() - lastReminder.timestamp)) / 60_000
+          (dynamicReminderCooldownMs(lastReminder.type, records) -
+            (Date.now() - lastReminder.timestamp)) /
+            1000
         )
       )
     : 0;
-  const awayCooldownRemainingSeconds = Math.max(
-    0,
-    Math.ceil((awayCooldownUntil - Date.now()) / 1000)
-  );
+  const awayCooldownRemainingSeconds =
+    lastReminder?.type === "away" ? reminderCooldownRemainingSeconds : 0;
 
   const getLocalReminderAudio = useCallback(() => {
     let audio = localReminderAudioRef.current;
@@ -273,6 +308,7 @@ export default function SupervisePage() {
       await audio.play();
       audio.pause();
       audio.currentTime = 0;
+      setAudioReady(true);
       return true;
     } catch (error) {
       console.error("[提醒声音] 本地音频解锁失败", error);
@@ -292,6 +328,7 @@ export default function SupervisePage() {
       audio.volume = 1;
       audio.load();
       await audio.play();
+      setAudioReady(true);
       return true;
     },
     [getLocalReminderAudio]
@@ -665,10 +702,11 @@ export default function SupervisePage() {
   }, [applyInterval, current, defaultIntervalForNow, highIntervalForCurrentPlan]);
 
   const triggerReminder = useCallback(
-    async (reminderType: ReminderType) => {
+    async (reminderType: ReminderType, contextRecords = recordsRef.current) => {
       const lastReminderAt = lastReminderAtRef.current[reminderType] ?? 0;
+      const cooldownMs = dynamicReminderCooldownMs(reminderType, contextRecords);
       if (
-        Date.now() - lastReminderAt < reminderCooldownMs ||
+        Date.now() - lastReminderAt < cooldownMs ||
         reminderPlayingRef.current[reminderType]
       ) {
         return null;
@@ -688,9 +726,6 @@ export default function SupervisePage() {
         const timestamp = Date.now();
         lastReminderAtRef.current[reminderType] = timestamp;
         reminderCountByTypeRef.current[reminderType] = reminderCount + 1;
-        if (reminderType === "away") {
-          setAwayCooldownUntil(timestamp + reminderCooldownMs);
-        }
         const reminder = {
           type: reminderType,
           text,
@@ -734,15 +769,10 @@ export default function SupervisePage() {
         setAwayCanRemind(reminderReady);
 
         if (!reminderReady) return null;
-        return await triggerReminder("away");
+        return await triggerReminder("away", nextRecords);
       }
 
-      const previous = nextRecords[nextRecords.length - 2];
-      if (!previous || latestReminderType !== reminderTypeForRecord(previous)) {
-        return null;
-      }
-
-      return await triggerReminder(latestReminderType);
+      return await triggerReminder(latestReminderType, nextRecords);
     },
     [triggerReminder]
   );
@@ -903,6 +933,10 @@ export default function SupervisePage() {
     },
     [current]
   );
+
+  useEffect(() => {
+    analyzeRef.current = analyze;
+  }, [analyze]);
 
   const markLatestRecordReminder = useCallback((reminder: LastReminder) => {
     const currentRecords = recordsRef.current;
@@ -1085,7 +1119,9 @@ export default function SupervisePage() {
           videoRef.current.srcObject = stream;
           await videoRef.current.play();
         }
-        initialAnalyzeTimerRef.current = window.setTimeout(() => void analyze(), 1200);
+        calibrationAnalyzeTimersRef.current = [1200, 20_000, 50_000].map((delay) =>
+          window.setTimeout(() => void analyzeRef.current(), delay)
+        );
       } catch {
         setCameraError("无法打开摄像头，请确认浏览器权限和HTTPS访问。");
         void fetch("/api/client-error", {
@@ -1105,13 +1141,11 @@ export default function SupervisePage() {
     void startCamera();
     return () => {
       cancelled = true;
-      if (initialAnalyzeTimerRef.current) {
-        window.clearTimeout(initialAnalyzeTimerRef.current);
-        initialAnalyzeTimerRef.current = null;
-      }
+      calibrationAnalyzeTimersRef.current.forEach((timer) => window.clearTimeout(timer));
+      calibrationAnalyzeTimersRef.current = [];
       streamRef.current?.getTracks().forEach((track) => track.stop());
     };
-  }, [analyze, current, needsRecoveryDecision, placementConfirmed]);
+  }, [current, needsRecoveryDecision, placementConfirmed]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -1345,6 +1379,32 @@ export default function SupervisePage() {
 
         <aside className="space-y-3">
           <div className="rounded-md border border-line bg-white p-4">
+            <div className="flex items-center justify-between gap-3">
+              <div className="text-sm text-muted">监督运行状态</div>
+              <div className={`text-sm font-semibold ${supervisionHealth === "监督运行正常" ? "text-brand" : "text-warn"}`}>
+                {supervisionHealth}
+              </div>
+            </div>
+            <div className="mt-3 grid grid-cols-2 gap-2 text-sm">
+              <div className="rounded-md bg-panel p-2">
+                <div className="text-xs text-muted">摄像头</div>
+                <div className="mt-1 font-medium">{cameraActive ? "正常" : "检查中"}</div>
+              </div>
+              <div className="rounded-md bg-panel p-2">
+                <div className="text-xs text-muted">最近检查</div>
+                <div className="mt-1 font-medium">{latestRecordTime}</div>
+              </div>
+              <div className="rounded-md bg-panel p-2">
+                <div className="text-xs text-muted">提醒声音</div>
+                <div className="mt-1 font-medium">{audioReady ? "已就绪" : "待确认"}</div>
+              </div>
+              <div className="rounded-md bg-panel p-2">
+                <div className="text-xs text-muted">画面质量</div>
+                <div className="mt-1 font-medium">{pictureQuality}</div>
+              </div>
+            </div>
+          </div>
+          <div className="rounded-md border border-line bg-white p-4">
             <div className="text-sm text-muted">当前状态</div>
             <div className="mt-2 flex items-center justify-between gap-2">
               <StatusBadge status={status} presence={presence} learningState={learningState} />
@@ -1370,11 +1430,21 @@ export default function SupervisePage() {
           <div className="rounded-md border border-line bg-white p-4">
             <div className="text-sm text-muted">当前模式</div>
             <div className="mt-1 text-xl font-semibold">
-              {isStartupSupervision ? "启动强监督中" : "正常监督中"}
+              {currentModeLabel}
             </div>
-            {isStartupSupervision && (
+            {elapsedSeconds < 2 * 60 && (
               <div className="mt-2 text-sm leading-5 text-muted">
-                前5分钟将高频检查，确保孩子在画面内并开始学习。
+                正在确认人物、拍摄角度和学习画面是否正常。
+              </div>
+            )}
+            {elapsedSeconds >= 2 * 60 && elapsedSeconds < 5 * 60 && (
+              <div className="mt-2 text-sm leading-5 text-muted">
+                前5分钟保持强监督，帮助孩子进入学习状态。
+              </div>
+            )}
+            {elapsedSeconds >= 5 * 60 && elapsedSeconds < 10 * 60 && (
+              <div className="mt-2 text-sm leading-5 text-muted">
+                系统正在根据最近学习状态动态调整检查和提醒节奏。
               </div>
             )}
             <div className="mt-4 border-t border-line pt-3 text-sm text-muted">
@@ -1429,8 +1499,8 @@ export default function SupervisePage() {
                 <div className="font-medium">{reminderLabels[lastReminder.type]}</div>
                 <div className="text-muted">{formatRelativeReminderTime(lastReminder.timestamp)}</div>
                 <div className="text-muted">
-                  {reminderCooldownRemainingMinutes > 0
-                    ? `冷却中：还需等待 ${reminderCooldownRemainingMinutes}分钟`
+                  {reminderCooldownRemainingSeconds > 0
+                    ? `冷却中：还需等待 ${formatDurationSeconds(reminderCooldownRemainingSeconds)}`
                     : "可再次提醒"}
                 </div>
               </div>
@@ -1610,6 +1680,47 @@ function reminderTypeForRecord(record: StudyRecord): ReminderType | null {
   if (currentPresence === "away") return "away";
   if (currentLearningState === "uncertain") return "uncertain";
   return null;
+}
+
+function dynamicReminderCooldownMs(
+  reminderType: ReminderType,
+  records: StudyRecord[]
+) {
+  const recentRecords = records.slice(-10);
+  const studyingCount = recentRecords.filter(
+    (record) =>
+      (record.presence ?? legacyPresenceFromStatus(record.status)) === "present" &&
+      (record.learning_state ?? legacyLearningStateFromStatus(record.status)) === "studying"
+  ).length;
+  const relevantAbnormalCount = recentRecords.filter(
+    (record) => reminderTypeForRecord(record) === reminderType
+  ).length;
+  let latestReminderIndex = -1;
+  for (let index = records.length - 1; index >= 0; index -= 1) {
+    const record = records[index];
+    if (record.triggered_reminder && record.reminder_type === reminderType) {
+      latestReminderIndex = index;
+      break;
+    }
+  }
+  const recoveredAfterReminder =
+    latestReminderIndex >= 0 &&
+    records.slice(latestReminderIndex + 1).some(
+      (record) =>
+        (record.presence ?? legacyPresenceFromStatus(record.status)) === "present" &&
+        (record.learning_state ?? legacyLearningStateFromStatus(record.status)) === "studying"
+    );
+
+  if (recoveredAfterReminder || (recentRecords.length >= 8 && studyingCount >= 8)) {
+    return stableReminderCooldownMs;
+  }
+  if (reminderType === "away" && relevantAbnormalCount >= 2) {
+    return awayMinimumCooldownMs;
+  }
+  if (reminderType === "uncertain" && relevantAbnormalCount >= 3) {
+    return uncertainMinimumCooldownMs;
+  }
+  return normalReminderCooldownMs;
 }
 
 function formatRelativeReminderTime(timestamp: number) {

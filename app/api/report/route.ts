@@ -49,6 +49,9 @@ function buildParentAdvice(stats: ReturnType<typeof calculateStats>) {
   if (stats.focusRate >= 80) {
     advice.push("建议保持当前学习节奏。");
   }
+  if (stats.reminderCount >= 2 && (stats.reminderResponseRate ?? 0) < 50) {
+    advice.push("本次提醒后恢复学习的比例偏低，建议检查任务是否过难，或学习环境是否存在持续干扰。");
+  }
   if (advice.length === 0) {
     advice.push("建议保持当前学习安排，结束后用简短复盘帮助孩子确认完成情况。");
   }

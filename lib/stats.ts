@@ -33,6 +33,7 @@ export function calculateStats(records: StudyRecord[], durationMinutes?: number)
       currentStudyingStreak = 0;
     }
   });
+  const reminderEffectiveness = calculateReminderEffectiveness(records);
 
   return {
     totalMinutes,
@@ -48,8 +49,57 @@ export function calculateStats(records: StudyRecord[], durationMinutes?: number)
     unrelatedCount,
     unknownCount,
     abnormalCount: awayCount,
-    reminderCount: records.filter((record) => record.triggered_reminder).length,
+    reminderCount: reminderEffectiveness.reminderCount,
+    effectiveReminderCount: reminderEffectiveness.effectiveReminderCount,
+    reminderResponseRate: reminderEffectiveness.reminderResponseRate,
+    averageRecoverySeconds: reminderEffectiveness.averageRecoverySeconds,
     longestFocusMinutes: longestStudyingStreak
+  };
+}
+
+export function calculateReminderEffectiveness(records: StudyRecord[]) {
+  const reminders = records
+    .map((record, index) => ({ record, index }))
+    .filter(({ record }) => record.triggered_reminder);
+  const recoverySeconds: number[] = [];
+
+  reminders.forEach(({ record, index }) => {
+    const reminderAt = new Date(record.timestamp).getTime();
+    const following = records.slice(index + 1, index + 4);
+    const recovered = following.find((candidate) => {
+      const candidateAt = new Date(candidate.timestamp).getTime();
+      const state = normalizeRecordState(candidate);
+      return (
+        Number.isFinite(reminderAt) &&
+        Number.isFinite(candidateAt) &&
+        candidateAt >= reminderAt &&
+        candidateAt - reminderAt <= 3 * 60 * 1000 &&
+        state.presence === "present" &&
+        state.learningState === "studying"
+      );
+    });
+
+    if (recovered) {
+      recoverySeconds.push(
+        Math.max(0, Math.round((new Date(recovered.timestamp).getTime() - reminderAt) / 1000))
+      );
+    }
+  });
+
+  const reminderCount = reminders.length;
+  const effectiveReminderCount = recoverySeconds.length;
+  return {
+    reminderCount,
+    effectiveReminderCount,
+    reminderResponseRate:
+      reminderCount === 0 ? 0 : Math.round((effectiveReminderCount / reminderCount) * 100),
+    averageRecoverySeconds:
+      effectiveReminderCount === 0
+        ? 0
+        : Math.round(
+            recoverySeconds.reduce((sum, seconds) => sum + seconds, 0) /
+              effectiveReminderCount
+          )
   };
 }
 

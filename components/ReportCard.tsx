@@ -45,6 +45,9 @@ export function ReportCard({
     ["专注率", records.length >= 5 ? `${stats.focusRate}%` : "数据采集中"],
     ["离座事件", `${awayEventCount}次`],
     ["提醒次数", `${stats.reminderCount}次`],
+    ["有效提醒", `${stats.effectiveReminderCount ?? 0}次`],
+    ["提醒恢复率", stats.reminderCount > 0 ? `${stats.reminderResponseRate ?? 0}%` : "暂无提醒"],
+    ["平均恢复时间", (stats.effectiveReminderCount ?? 0) > 0 ? formatRecoveryTime(stats.averageRecoverySeconds ?? 0) : "暂无数据"],
     ["最长连续学习", `${stats.longestFocusMinutes}分钟`]
   ];
 
@@ -66,7 +69,8 @@ export function ReportCard({
             ["有效学习", `${learningInsights.studyingMinutes}分钟`],
             ["无法判断", `${learningInsights.uncertainCount}次`],
             ["离座记录", `${learningInsights.awayCount}次`],
-            ["提醒", `${stats.reminderCount}次`]
+            ["提醒", `${stats.reminderCount}次`],
+            ["提醒有效率", stats.reminderCount > 0 ? `${stats.reminderResponseRate ?? 0}%` : "暂无提醒"]
           ].map(([label, value]) => (
             <div key={label} className="rounded-md bg-panel p-3">
               <div className="text-sm text-muted">{label}</div>
@@ -229,6 +233,9 @@ function buildOneLineSummary(stats: StudyStats) {
 
 function buildKeyConcern(stats: StudyStats, insufficientData: boolean) {
   if (insufficientData) return "本次数据量偏少，暂时不判断学习表现。";
+  if (stats.reminderCount >= 2 && (stats.reminderResponseRate ?? 0) < 50) {
+    return "本次多次提醒后恢复学习的比例偏低，需要关注任务难度或环境干扰。";
+  }
   if (stats.awayCount >= 2) return "本次最需要关注的是离座识别记录偏多。";
   if (stats.uncertainCount >= 3) return "本次最需要关注的是画面无法判断次数偏多。";
   if (stats.focusRate >= 80) return "本次整体表现较稳定，建议保持当前学习节奏。";
@@ -271,6 +278,10 @@ function buildKeyEvents(records: StudyRecord[], stats: StudyStats, insufficientD
     `本次离座事件 ${countAwayEvents(records)} 次`,
     `本次离座识别记录 ${stats.awayCount} 条`,
     `本次触发提醒 ${stats.reminderCount} 次`,
+    `其中 ${stats.effectiveReminderCount ?? 0} 次提醒后在3分钟内恢复学习`,
+    stats.reminderCount > 0
+      ? `提醒恢复率 ${stats.reminderResponseRate ?? 0}%`
+      : "本次未触发语音提醒",
     `最集中离座时段：${findAbnormalWindow(records)}`,
     stats.longestFocusMinutes > 0
       ? `最长连续专注时长约 ${stats.longestFocusMinutes} 分钟`
@@ -298,6 +309,11 @@ function countAwayEvents(records: StudyRecord[]) {
   });
 
   return count;
+}
+
+function formatRecoveryTime(seconds: number) {
+  if (seconds < 60) return `${seconds}秒`;
+  return `${Math.floor(seconds / 60)}分${seconds % 60}秒`;
 }
 
 function findAbnormalWindow(records: StudyRecord[]) {

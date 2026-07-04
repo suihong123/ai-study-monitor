@@ -122,6 +122,9 @@ export type StudyStats = {
   unknownCount: number;
   abnormalCount: number;
   reminderCount: number;
+  effectiveReminderCount: number;
+  reminderResponseRate: number;
+  averageRecoverySeconds: number;
   longestFocusMinutes: number;
 };
 
