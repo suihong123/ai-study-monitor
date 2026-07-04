@@ -157,9 +157,12 @@ export default function SupervisePage() {
   const frequencyReasonRef = useRef<FrequencyReason>("normal");
   const initialAnalyzeTimerRef = useRef<number | null>(null);
   const wakeLockRef = useRef<WakeLockSentinel | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const speechUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
   const awayStartAtRef = useRef<number | null>(null);
   const lastReminderAtRef = useRef<Partial<Record<ReminderType, number>>>({});
   const reminderCountByTypeRef = useRef<Partial<Record<ReminderType, number>>>({});
+  const reminderPlayingRef = useRef<Partial<Record<ReminderType, boolean>>>({});
   const [current, setCurrent] = useState<CurrentSupervision | null>(null);
   const [status, setStatus] = useState<StudyStatus>("unknown");
   const [presence, setPresence] = useState<Presence>("present");
@@ -235,18 +238,29 @@ export default function SupervisePage() {
     Math.ceil((awayCooldownUntil - Date.now()) / 1000)
   );
 
-  const playBeep = useCallback(async (pattern: BeepPattern = "single") => {
+  const unlockReminderAudio = useCallback(async () => {
     const AudioContextClass =
       window.AudioContext ?? (window as WebAudioWindow).webkitAudioContext;
     if (!AudioContextClass) {
-      return false;
+      return null;
     }
 
-    const audioContext = new AudioContextClass();
+    let audioContext = audioContextRef.current;
+    if (!audioContext || audioContext.state === "closed") {
+      audioContext = new AudioContextClass();
+      audioContextRef.current = audioContext;
+    }
 
     if (audioContext.state === "suspended") {
       await audioContext.resume();
     }
+
+    return audioContext;
+  }, []);
+
+  const playBeep = useCallback(async (pattern: BeepPattern = "single") => {
+    const audioContext = await unlockReminderAudio();
+    if (!audioContext) return false;
 
     const beepCount = pattern === "triple" ? 3 : 1;
     const duration = 0.6;
@@ -257,10 +271,7 @@ export default function SupervisePage() {
       const finishOne = () => {
         endedCount += 1;
         if (endedCount === beepCount) {
-          window.setTimeout(() => {
-            void audioContext.close();
-            resolve();
-          }, 50);
+          window.setTimeout(resolve, 50);
         }
       };
 
@@ -283,48 +294,84 @@ export default function SupervisePage() {
           oscillator.stop(startAt + duration);
         }
       } catch (error) {
-        void audioContext.close();
         reject(error);
       }
     });
 
     return true;
+  }, [unlockReminderAudio]);
+
+  const playInlineWav = useCallback(async (pattern: BeepPattern = "single") => {
+    const beepCount = pattern === "triple" ? 3 : 1;
+    for (let index = 0; index < beepCount; index += 1) {
+      const audio = new Audio(createInlineBeepWavUrl());
+      audio.preload = "auto";
+      audio.muted = false;
+      audio.volume = 1;
+      audio.setAttribute("playsinline", "true");
+      await audio.play();
+      await new Promise<void>((resolve) => {
+        audio.onended = () => resolve();
+        window.setTimeout(resolve, 900);
+      });
+      if (index < beepCount - 1) {
+        await new Promise((resolve) => window.setTimeout(resolve, 200));
+      }
+    }
   }, []);
 
-  const playInlineWav = useCallback(async () => {
-    const audio = new Audio(createInlineBeepWavUrl());
-    audio.preload = "auto";
-    audio.muted = false;
-    audio.volume = 1;
-    audio.setAttribute("playsinline", "true");
-    await audio.play();
-    await new Promise<void>((resolve) => {
-      audio.onended = () => resolve();
-      window.setTimeout(resolve, 900);
-    });
-  }, []);
-
-  const speak = useCallback((text: string) => {
+  const speak = useCallback(async (text: string) => {
     if (!("speechSynthesis" in window)) {
       return false;
     }
 
-    try {
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.lang = "zh-CN";
-      utterance.rate = 0.95;
-      window.speechSynthesis.cancel();
-      window.speechSynthesis.speak(utterance);
-      return true;
-    } catch (error) {
-      console.error("[提醒声音] speechSynthesis 播放失败", error);
-      return false;
-    }
+    return new Promise<boolean>((resolve) => {
+      let settled = false;
+      const finish = (success: boolean) => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timeout);
+        resolve(success);
+      };
+      const timeout = window.setTimeout(() => finish(false), 1500);
+
+      try {
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.lang = "zh-CN";
+        utterance.rate = 0.95;
+        speechUtteranceRef.current = utterance;
+        utterance.onstart = () => finish(true);
+        utterance.onend = () => {
+          if (speechUtteranceRef.current === utterance) {
+            speechUtteranceRef.current = null;
+          }
+          finish(true);
+        };
+        utterance.onerror = (event) => {
+          if (speechUtteranceRef.current === utterance) {
+            speechUtteranceRef.current = null;
+          }
+          console.error("[提醒声音] speechSynthesis 播放失败", event.error);
+          finish(false);
+        };
+        window.speechSynthesis.cancel();
+        window.speechSynthesis.speak(utterance);
+      } catch (error) {
+        console.error("[提醒声音] speechSynthesis 播放失败", error);
+        finish(false);
+      }
+    });
   }, []);
 
   const playReminderAudio = useCallback(
     async (reminderType: ReminderType, text: string) => {
       const pattern: BeepPattern = reminderType === "away" ? "triple" : "single";
+      const speechStarted = await speak(text);
+      if (speechStarted) {
+        setLastAudioResult("TTS 语音提醒已开始播放");
+        return true;
+      }
+
       let beepPlayed = false;
       try {
         beepPlayed = await playBeep(pattern);
@@ -336,7 +383,7 @@ export default function SupervisePage() {
 
       if (!beepPlayed) {
         try {
-          await playInlineWav();
+          await playInlineWav(pattern);
           beepPlayed = true;
         } catch (error) {
           setLastAudioResult(
@@ -345,20 +392,15 @@ export default function SupervisePage() {
         }
       }
 
-      const speechStarted = speak(text);
       if (beepPlayed) {
         const beepText =
           reminderType === "away" ? "蜂鸣提示成功（三声）" : "蜂鸣提示成功（单声）";
-        setLastAudioResult(
-          speechStarted ? `${beepText}，TTS 已尝试播放` : `${beepText}，TTS 未启动`
-        );
+        setLastAudioResult(`TTS 未启动，${beepText}`);
         return true;
       }
 
-      setLastAudioResult(
-        speechStarted ? "蜂鸣失败，已尝试 TTS 兜底" : "蜂鸣和 TTS 均未启动，请检查媒体音量"
-      );
-      return speechStarted;
+      setLastAudioResult("TTS 和蜂鸣均未启动，请检查媒体音量");
+      return false;
     },
     [playBeep, playInlineWav, speak]
   );
@@ -375,12 +417,34 @@ export default function SupervisePage() {
       setAudioTestSteps(next);
     };
 
-    console.info("[提醒声音测试] 开始安卓兼容播放测试");
+    console.info("[提醒声音测试] 开始提醒链路测试");
     setAudioTestMessage("");
     setAudioTestSteps([]);
     setLastAudioResult("正在测试提醒声音");
+    try {
+      await unlockReminderAudio();
+    } catch (error) {
+      console.error("[提醒声音测试] 音频环境解锁失败", error);
+    }
+    let speechOk = false;
     let webAudioOk = false;
     let audioTagOk = false;
+
+    updateStep({ label: "TTS", status: "pending", detail: "尝试播放中文语音提醒" });
+    speechOk = await speak("这是学习监督提醒声音，请确认音量合适。");
+    updateStep(
+      speechOk
+        ? { label: "TTS", status: "success", detail: "语音已开始播放" }
+        : { label: "TTS", status: "failed", detail: "未检测到语音开始，继续测试蜂鸣兜底" }
+    );
+
+    if (speechOk) {
+      updateStep({ label: "WebAudio", status: "skipped", detail: "TTS 已成功，未触发蜂鸣兜底" });
+      updateStep({ label: "Audio标签", status: "skipped", detail: "TTS 已成功，未触发蜂鸣兜底" });
+      setLastAudioResult("测试：TTS 语音提醒已开始播放");
+      setAudioTestMessage("语音提醒正常。实际提醒会优先使用语音，失败时再播放蜂鸣。");
+      return;
+    }
 
     try {
       updateStep({ label: "WebAudio", status: "pending", detail: "开始播放 880Hz / 0.6秒 / gain 0.3" });
@@ -426,20 +490,12 @@ export default function SupervisePage() {
       updateStep({ label: "Audio标签", status: "skipped", detail: "WebAudio 已成功，未继续测试" });
     }
 
-    if (!webAudioOk && !audioTagOk) {
-      const speechStarted = speak("这是学习监督提醒声音，请确认音量合适。");
-      updateStep(
-        speechStarted
-          ? { label: "TTS", status: "success", detail: "已尝试 speechSynthesis 朗读" }
-          : { label: "TTS", status: "failed", detail: "speechSynthesis 不可用或启动失败" }
-      );
-      setLastAudioResult(speechStarted ? "测试：已尝试 TTS 兜底" : "测试：声音播放均未启动");
-    } else {
-      updateStep({ label: "TTS", status: "skipped", detail: "前置提示音已成功，未继续测试" });
-    }
-
-    setAudioTestMessage("如果安卓仍无声，请检查媒体音量，不是铃声音量。");
-  }, [playBeep, playInlineWav, speak]);
+    setAudioTestMessage(
+      webAudioOk || audioTagOk
+        ? "TTS 未启动，蜂鸣兜底正常。请检查媒体音量，不是铃声音量。"
+        : "TTS 和蜂鸣都未成功，请关闭静音模式、调高媒体音量后重试。"
+    );
+  }, [playBeep, playInlineWav, speak, unlockReminderAudio]);
 
   const applyInterval = useCallback((nextInterval: number, reason: FrequencyReason) => {
     const boundedInterval = Math.min(nextInterval, maxAnalyzeIntervalSeconds);
@@ -512,9 +568,12 @@ export default function SupervisePage() {
   }, [applyInterval, current, defaultIntervalForNow, highIntervalForCurrentPlan]);
 
   const triggerReminder = useCallback(
-    (reminderType: ReminderType) => {
+    async (reminderType: ReminderType) => {
       const lastReminderAt = lastReminderAtRef.current[reminderType] ?? 0;
-      if (Date.now() - lastReminderAt < reminderCooldownMs) {
+      if (
+        Date.now() - lastReminderAt < reminderCooldownMs ||
+        reminderPlayingRef.current[reminderType]
+      ) {
         return null;
       }
 
@@ -524,25 +583,33 @@ export default function SupervisePage() {
           ? firstReminderTexts[reminderType]
           : repeatReminderTexts[reminderType];
 
-      void playReminderAudio(reminderType, text);
-      lastReminderAtRef.current[reminderType] = Date.now();
-      reminderCountByTypeRef.current[reminderType] = reminderCount + 1;
-      if (reminderType === "away") {
-        setAwayCooldownUntil(Date.now() + reminderCooldownMs);
+      reminderPlayingRef.current[reminderType] = true;
+      try {
+        const played = await playReminderAudio(reminderType, text);
+        if (!played) return null;
+
+        const timestamp = Date.now();
+        lastReminderAtRef.current[reminderType] = timestamp;
+        reminderCountByTypeRef.current[reminderType] = reminderCount + 1;
+        if (reminderType === "away") {
+          setAwayCooldownUntil(timestamp + reminderCooldownMs);
+        }
+        const reminder = {
+          type: reminderType,
+          text,
+          timestamp
+        };
+        setLastReminder(reminder);
+        return reminder;
+      } finally {
+        reminderPlayingRef.current[reminderType] = false;
       }
-      const reminder = {
-        type: reminderType,
-        text,
-        timestamp: Date.now()
-      };
-      setLastReminder(reminder);
-      return reminder;
     },
     [playReminderAudio]
   );
 
   const maybeRemind = useCallback(
-    (nextRecords: StudyRecord[]) => {
+    async (nextRecords: StudyRecord[]) => {
       const latest = nextRecords[nextRecords.length - 1];
       if (!latest) return null;
 
@@ -570,7 +637,7 @@ export default function SupervisePage() {
         setAwayCanRemind(reminderReady);
 
         if (!reminderReady) return null;
-        return triggerReminder("away");
+        return await triggerReminder("away");
       }
 
       const previous = nextRecords[nextRecords.length - 2];
@@ -578,7 +645,7 @@ export default function SupervisePage() {
         return null;
       }
 
-      return triggerReminder(latestReminderType);
+      return await triggerReminder(latestReminderType);
     },
     [triggerReminder]
   );
@@ -656,7 +723,7 @@ export default function SupervisePage() {
           error_message: null
         }
       ];
-      const reminder = maybeRemind(draftRecords);
+      const reminder = await maybeRemind(draftRecords);
       const nextRecords = draftRecords.map((record, index) =>
         index === draftRecords.length - 1
           ? {
@@ -957,6 +1024,18 @@ export default function SupervisePage() {
   }, []);
 
   useEffect(() => {
+    return () => {
+      const audioContext = audioContextRef.current;
+      audioContextRef.current = null;
+      speechUtteranceRef.current = null;
+      window.speechSynthesis?.cancel();
+      if (audioContext && audioContext.state !== "closed") {
+        void audioContext.close();
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     function updateActivity() {
       setPageActive(!document.hidden && navigator.onLine);
       if (!document.hidden && navigator.onLine && current && placementConfirmed && !needsRecoveryDecision) {
@@ -1017,10 +1096,11 @@ export default function SupervisePage() {
       setAwayCanRemind(conditionMet);
 
       if (conditionMet) {
-        const reminder = triggerReminder("away");
-        if (reminder) {
-          markLatestRecordReminder(reminder);
-        }
+        void triggerReminder("away").then((reminder) => {
+          if (reminder) {
+            markLatestRecordReminder(reminder);
+          }
+        });
       }
     }, 1000);
     return () => window.clearInterval(timer);
@@ -1350,6 +1430,7 @@ export default function SupervisePage() {
               <button
                 type="button"
                 onClick={() => {
+                  void unlockReminderAudio();
                   window.sessionStorage.setItem(`placement-confirmed-${current.session.id}`, "true");
                   setPlacementConfirmed(true);
                 }}
@@ -1371,7 +1452,10 @@ export default function SupervisePage() {
             <div className="mt-5 flex flex-col gap-2 sm:flex-row">
               <button
                 type="button"
-                onClick={() => setNeedsRecoveryDecision(false)}
+                onClick={() => {
+                  void unlockReminderAudio();
+                  setNeedsRecoveryDecision(false);
+                }}
                 className="h-11 rounded-md bg-brand px-4 font-semibold text-white"
               >
                 恢复监督
