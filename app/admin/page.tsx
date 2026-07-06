@@ -4,6 +4,7 @@ import { FormEvent, useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import type { AccessCode, AccessCodeStatus, PlanType } from "@/types";
 import { statusLabels } from "@/lib/access-code-status";
+import { defaultQwenApiUrl, visionModelOptions } from "@/lib/model-options";
 import { appVersion } from "@/lib/version";
 
 type AdminAccessCode = AccessCode & {
@@ -53,6 +54,17 @@ type AdminLog = {
 
 type AdminOverview = {
   dashboard?: Record<string, number>;
+  modelConfig?: {
+    id?: string;
+    mode: "mock" | "qwen";
+    provider: "qwen";
+    model: string;
+    apiUrl: string;
+    estimatedCostPerCall: number;
+    notes?: string | null;
+    source: "database" | "environment";
+    updatedAt?: string | null;
+  };
   accessCodes?: AdminAccessCode[];
   sessions?: AdminSession[];
   aiCallLogs?: AdminLog[];
@@ -140,6 +152,13 @@ export default function AdminPage() {
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
   const [lockedUntil, setLockedUntil] = useState(0);
+  const [modelForm, setModelForm] = useState({
+    mode: "qwen" as "mock" | "qwen",
+    model: "qwen3.6-flash",
+    apiUrl: defaultQwenApiUrl,
+    estimatedCostPerCall: "0.003",
+    notes: ""
+  });
 
   async function loadAdmin(adminPassword = password, sessionId = selectedSessionId) {
     if (!adminPassword) return;
@@ -156,6 +175,7 @@ export default function AdminPage() {
         return;
       }
       setOverview(result);
+      syncModelForm(result.modelConfig);
     } finally {
       setLoading(false);
     }
@@ -200,6 +220,51 @@ export default function AdminPage() {
       setLockedUntil(0);
       setIsVerified(true);
       setOverview(result);
+      syncModelForm(result.modelConfig);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function syncModelForm(config?: AdminOverview["modelConfig"]) {
+    if (!config) return;
+    setModelForm({
+      mode: config.mode,
+      model: config.model,
+      apiUrl: config.apiUrl,
+      estimatedCostPerCall: String(config.estimatedCostPerCall),
+      notes: config.notes ?? ""
+    });
+  }
+
+  async function updateModelConfig(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setLoading(true);
+    setMessage("");
+    try {
+      const response = await fetch("/api/admin/model-config", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-admin-password": password
+        },
+        body: JSON.stringify({
+          mode: modelForm.mode,
+          model: modelForm.model,
+          apiUrl: modelForm.apiUrl,
+          estimatedCostPerCall: Number(modelForm.estimatedCostPerCall),
+          notes: modelForm.notes
+        })
+      });
+      const result = await response.json();
+      if (!response.ok) {
+        setMessage(response.status === 401 ? "验证失败" : result.error ?? "保存模型配置失败");
+        return;
+      }
+      setMessage("视觉模型配置已更新");
+      setOverview((current) => ({ ...current, modelConfig: result.modelConfig }));
+      syncModelForm(result.modelConfig);
+      await loadAdmin();
     } finally {
       setLoading(false);
     }
@@ -407,6 +472,110 @@ export default function AdminPage() {
           创建访问码
         </button>
       </form>
+
+      <Section title="视觉模型配置">
+        <form onSubmit={updateModelConfig} className="grid gap-3 md:grid-cols-2">
+          <div className="rounded-md bg-panel p-3 text-sm leading-6 text-muted md:col-span-2">
+            <div className="font-semibold text-ink">
+              当前模型：{overview.modelConfig?.mode === "mock" ? "Mock测试模式" : overview.modelConfig?.model ?? "-"}
+            </div>
+            <div>
+              配置来源：
+              {overview.modelConfig?.source === "database" ? "后台配置" : "环境变量"}
+              {overview.modelConfig?.updatedAt ? ` / 更新时间：${formatDate(overview.modelConfig.updatedAt)}` : ""}
+            </div>
+            <div>说明：普通用户页面不会展示模型和 API 信息；这里仅用于运营控制成本和测试模型效果。</div>
+          </div>
+
+          <label className="text-sm font-medium">
+            识别模式
+            <select
+              value={modelForm.mode}
+              onChange={(event) =>
+                setModelForm((current) => ({ ...current, mode: event.target.value as "mock" | "qwen" }))
+              }
+              className="mt-1 h-11 w-full rounded-md border border-line px-3 outline-none focus:border-brand"
+            >
+              <option value="qwen">真实AI识别（Qwen）</option>
+              <option value="mock">测试模式（Mock）</option>
+            </select>
+          </label>
+
+          <label className="text-sm font-medium">
+            常用模型
+            <select
+              value={visionModelOptions.some((item) => item.value === modelForm.model) ? modelForm.model : "custom"}
+              onChange={(event) => {
+                const selected = visionModelOptions.find((item) => item.value === event.target.value);
+                if (!selected) return;
+                setModelForm((current) => ({
+                  ...current,
+                  model: selected.value,
+                  estimatedCostPerCall: String(selected.estimatedCostPerCall)
+                }));
+              }}
+              className="mt-1 h-11 w-full rounded-md border border-line px-3 outline-none focus:border-brand"
+            >
+              {visionModelOptions.map((item) => (
+                <option key={item.value} value={item.value}>
+                  {item.label}
+                </option>
+              ))}
+              <option value="custom">自定义模型名</option>
+            </select>
+          </label>
+
+          <label className="text-sm font-medium">
+            模型名称
+            <input
+              value={modelForm.model}
+              onChange={(event) => setModelForm((current) => ({ ...current, model: event.target.value }))}
+              className="mt-1 h-11 w-full rounded-md border border-line px-3 outline-none focus:border-brand"
+              placeholder="例如 qwen3-vl-flash"
+            />
+          </label>
+
+          <label className="text-sm font-medium">
+            Qwen接口地址
+            <input
+              value={modelForm.apiUrl}
+              onChange={(event) => setModelForm((current) => ({ ...current, apiUrl: event.target.value }))}
+              className="mt-1 h-11 w-full rounded-md border border-line px-3 outline-none focus:border-brand"
+              placeholder={defaultQwenApiUrl}
+            />
+          </label>
+
+          <label className="text-sm font-medium">
+            预估单次识别成本（元）
+            <input
+              value={modelForm.estimatedCostPerCall}
+              onChange={(event) =>
+                setModelForm((current) => ({ ...current, estimatedCostPerCall: event.target.value }))
+              }
+              className="mt-1 h-11 w-full rounded-md border border-line px-3 outline-none focus:border-brand"
+              inputMode="decimal"
+              placeholder="0.001"
+            />
+          </label>
+
+          <label className="text-sm font-medium md:col-span-2">
+            运营备注
+            <input
+              value={modelForm.notes}
+              onChange={(event) => setModelForm((current) => ({ ...current, notes: event.target.value }))}
+              className="mt-1 h-11 w-full rounded-md border border-line px-3 outline-none focus:border-brand"
+              placeholder="例如：低成本模型灰度测试"
+            />
+          </label>
+
+          <button
+            disabled={loading || !password}
+            className="h-11 rounded-md bg-ink px-4 font-semibold text-white disabled:opacity-60 md:w-48"
+          >
+            保存模型配置
+          </button>
+        </form>
+      </Section>
 
       {message && (
         <div className="mb-4 rounded-md border border-line bg-white p-3 text-sm">

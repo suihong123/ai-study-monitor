@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isAdminRequest } from "@/lib/admin";
+import { getActiveVisionModelConfig } from "@/lib/model-config";
 import { getTodayKey } from "@/lib/plans";
 import { settleExpiredSessions } from "@/lib/session-settlement";
 import { supabaseAdmin } from "@/lib/supabase/server";
@@ -26,6 +27,7 @@ export async function GET(request: NextRequest) {
   const since = todayStartIso();
   const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
   const sessionId = request.nextUrl.searchParams.get("sessionId");
+  const modelConfig = await getActiveVisionModelConfig();
 
   const [
     accessCodes,
@@ -76,11 +78,11 @@ export async function GET(request: NextRequest) {
     supabaseAdmin
       .from("ai_call_logs")
       .select("estimated_cost")
-      .eq("model_type", "vision_qwen"),
+      .like("model_type", "vision_qwen%"),
     supabaseAdmin
       .from("ai_call_logs")
       .select("estimated_cost")
-      .eq("model_type", "vision_qwen")
+      .like("model_type", "vision_qwen%")
       .gte("created_at", sevenDaysAgo)
   ]);
 
@@ -109,7 +111,9 @@ export async function GET(request: NextRequest) {
     String(row.model_type ?? "").startsWith("report_")
   );
   const mockAnalyzeCount = todayAiRows.filter((row) => row.model_type === "vision_mock").length;
-  const qwenAnalyzeCount = todayAiRows.filter((row) => row.model_type === "vision_qwen").length;
+  const qwenAnalyzeCount = todayAiRows.filter((row) =>
+    String(row.model_type ?? "").startsWith("vision_qwen")
+  ).length;
   const qwenAllRows = qwenAllLogs.data ?? [];
   const qwenSevenDayRows = qwenSevenDayLogs.data ?? [];
   const qwenTotalCost = qwenAllRows.reduce(
@@ -117,7 +121,7 @@ export async function GET(request: NextRequest) {
     0
   );
   const qwenTodayCost = todayAiRows
-    .filter((row) => row.model_type === "vision_qwen")
+    .filter((row) => String(row.model_type ?? "").startsWith("vision_qwen"))
     .reduce((sum, row) => sum + Number(row.estimated_cost ?? 0), 0);
   const qwenSevenDayCost = qwenSevenDayRows.reduce(
     (sum, row) => sum + Number(row.estimated_cost ?? 0),
@@ -276,6 +280,7 @@ export async function GET(request: NextRequest) {
     errorLogs: errorLogs.data ?? [],
     suspiciousLogs: suspiciousLogs.data ?? [],
     adminActions: adminActions.data ?? [],
+    modelConfig,
     costByAccessCode: Object.values(costByAccessCode),
     sessionDetail
   });

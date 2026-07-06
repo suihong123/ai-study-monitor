@@ -131,6 +131,40 @@ create table if not exists ai_call_logs (
   created_at timestamptz not null default now()
 );
 
+create table if not exists ai_model_configs (
+  id uuid primary key default gen_random_uuid(),
+  provider text not null default 'qwen' check (provider in ('qwen')),
+  mode text not null default 'qwen' check (mode in ('mock', 'qwen')),
+  model text not null,
+  api_url text not null,
+  estimated_cost_per_call numeric(10, 4) not null default 0.003,
+  is_active boolean not null default false,
+  notes text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz
+);
+
+insert into ai_model_configs (
+  provider,
+  mode,
+  model,
+  api_url,
+  estimated_cost_per_call,
+  is_active,
+  notes,
+  updated_at
+) values (
+  'qwen',
+  'qwen',
+  'qwen3.6-flash',
+  'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions',
+  0.003,
+  true,
+  '默认稳定模型，可在后台切换为 qwen3-vl-flash 进行低成本测试。',
+  now()
+)
+on conflict do nothing;
+
 create table if not exists suspicious_logs (
   id uuid primary key default gen_random_uuid(),
   access_code_id uuid references access_codes(id) on delete set null,
@@ -158,6 +192,9 @@ create unique index if not exists idx_sessions_report_token on sessions(report_t
 create index if not exists idx_records_session_id on records(session_id);
 create index if not exists idx_error_logs_created_at on error_logs(created_at);
 create index if not exists idx_ai_call_logs_created_at on ai_call_logs(created_at);
+create unique index if not exists idx_ai_model_configs_one_active_provider
+  on ai_model_configs(provider)
+  where is_active = true;
 create index if not exists idx_suspicious_logs_created_at on suspicious_logs(created_at);
 create index if not exists idx_admin_actions_access_code_id on admin_actions(access_code_id);
 create index if not exists idx_admin_actions_created_at on admin_actions(created_at);
@@ -168,6 +205,7 @@ alter table sessions enable row level security;
 alter table records enable row level security;
 alter table error_logs enable row level security;
 alter table ai_call_logs enable row level security;
+alter table ai_model_configs enable row level security;
 alter table suspicious_logs enable row level security;
 alter table admin_actions enable row level security;
 

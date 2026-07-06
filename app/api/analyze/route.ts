@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { costConfig } from "@/lib/costs";
+import { getActiveVisionModelConfig, type VisionModelConfig } from "@/lib/model-config";
 import { supabaseAdmin } from "@/lib/supabase/server";
 import {
   checkRateLimit,
@@ -194,10 +195,10 @@ function pickMockStatus(sessionId: string) {
   };
 }
 
-async function analyzeWithQwen(image: string) {
+async function analyzeWithQwen(image: string, config: VisionModelConfig) {
   const apiKey = process.env.QWEN_API_KEY;
-  const apiUrl = process.env.QWEN_API_URL;
-  const model = process.env.QWEN_MODEL;
+  const apiUrl = config.apiUrl;
+  const model = config.model;
 
   if (!apiKey || !apiUrl || !model) {
     throw new Error("Qwen-VL环境变量未完整配置，已回退Mock");
@@ -220,6 +221,7 @@ async function analyzeWithQwen(image: string) {
   console.info("[Qwen-VL] request", {
     url: apiUrl,
     model,
+    configSource: config.source,
     body: {
       ...requestBody,
       messages: requestBody.messages.map((message) => ({
@@ -251,6 +253,7 @@ async function analyzeWithQwen(image: string) {
   console.info("[Qwen-VL] response", {
     url: apiUrl,
     model,
+    configSource: config.source,
     status: response.status,
     ok: response.ok,
     body: responseBody
@@ -324,14 +327,15 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "AI识别调用过于频繁" }, { status: 429 });
   }
 
-  const requestedMode = process.env.ANALYZE_MODE === "qwen" ? "qwen" : "mock";
+  const visionConfig = await getActiveVisionModelConfig();
+  const requestedMode = visionConfig.mode;
   let analyzeMode = requestedMode;
   let analyzed;
 
   try {
     analyzed =
       requestedMode === "qwen"
-        ? await analyzeWithQwen(body.image)
+        ? await analyzeWithQwen(body.image, visionConfig)
         : pickMockStatus(auth.context.session.id);
   } catch (error) {
     analyzeMode = "mock";
@@ -384,11 +388,17 @@ export async function POST(request: NextRequest) {
     await logAiCall({
       sessionId: auth.context.session.id,
       accessCodeId: auth.context.accessCode.id,
-      modelType: analyzeMode === "qwen" ? "vision_qwen" : "vision_mock",
+      modelType:
+        analyzeMode === "qwen"
+          ? `vision_qwen:${visionConfig.model}`
+          : "vision_mock",
       status: "success",
       inputSize: typeof body.image === "string" ? body.image.length : 0,
       outputSize: JSON.stringify(output).length,
-      estimatedCost: costConfig.visionAnalyzeCost,
+      estimatedCost:
+        analyzeMode === "qwen"
+          ? visionConfig.estimatedCostPerCall
+          : costConfig.visionAnalyzeCost,
       latencyMs: Date.now() - startedAt
     });
   } catch (error) {

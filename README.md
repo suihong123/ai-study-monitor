@@ -40,6 +40,7 @@
 - `POST /api/session/start`：开始监督兼容入口
 - `POST /api/session/end`：结束监督兼容入口
 - `POST /api/client-error`：记录摄像头权限等前端错误
+- `GET/POST /api/admin/model-config`：后台查看和更新视觉模型配置
 
 ## Supabase 建表
 
@@ -76,6 +77,16 @@
 - `records.current_frequency_seconds`、`triggered_reminder`、`ai_called`、`error_message`：单次识别时间线调试字段
 - `records.confidence`、`reason`、`analyze_mode`、`manual_corrected`、`correction_source`、`corrected_at`：识别质量评估和手动纠错字段
 
+视觉模型后台配置迁移：
+
+```sql
+-- 见 supabase/migration_2026_15_ai_model_configs.sql
+```
+
+文件路径：`supabase/migration_2026_15_ai_model_configs.sql`
+
+- `ai_model_configs`：当前启用的视觉模型、接口地址和预估单次识别成本
+
 ## 环境变量
 
 在 Vercel Project Settings 里配置：
@@ -100,6 +111,7 @@ DEEPSEEK_API_KEY=后续DeepSeek服务端密钥
 - `ADMIN_PASSWORD` 用于保护 `/admin` 的接口操作。
 - AI API Key 只能放在服务端环境变量里，不得写入前端代码。
 - `ANALYZE_MODE` 默认为 `mock`；设置为 `qwen` 时尝试调用 Qwen-VL，Qwen 环境变量缺失会自动回退 Mock 并写入错误日志。
+- 后台“视觉模型配置”会优先于 `ANALYZE_MODE`、`QWEN_API_URL`、`QWEN_MODEL` 生效；如果未执行模型配置迁移或未配置后台模型，则自动回退环境变量。
 
 ## 后台使用
 
@@ -110,6 +122,7 @@ DEEPSEEK_API_KEY=后续DeepSeek服务端密钥
 - 错误日志、AI调用日志、风险记录
 - 按访问码统计的调用次数、预估成本、平均每小时成本、平均每次监督成本、报告成本
 - 访问码禁用、解绑设备、重置今日额度
+- 视觉模型配置：可在 `qwen3.6-flash` 稳定模型和 `qwen3-vl-flash` 低成本候选之间切换，也可以填写自定义模型名和预估单次识别成本
 
 ## Rate Limit
 
