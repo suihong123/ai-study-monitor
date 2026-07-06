@@ -126,8 +126,9 @@ MVP 阶段使用内存版限流，后续可替换为 Redis。
 ## 安全机制
 
 - 开始监督时后端生成 `session_token`
-- `/api/analyze`、`/api/report`、结束监督接口必须携带 `accessCodeId`、`sessionId`、`sessionToken`
+- `/api/analyze`和结束监督接口必须携带 `accessCodeId`、`sessionId`、`sessionToken`
 - 结束监督后 `session_token` 失效
+- 已结束报告使用独立的 `report_token` 只读访问，不能用于调用监督接口
 - 访问码首次使用绑定 `device_id`
 - 换设备使用会提示“该访问码已绑定其他设备，请联系客服解绑。”
 - 服务端不信任前端传来的套餐、频率、报告等级和额度字段
@@ -167,6 +168,16 @@ MVP 阶段使用内存版限流，后续可替换为 Redis。
 6. 部署完成后访问线上网址。
 7. 打开 `/admin`，输入 `ADMIN_PASSWORD`，选择套餐并创建访问码。
 8. 回到首页输入访问码，点击开始监督。
+
+### v0.6 报告迁移
+
+已有项目升级到 v0.6 时，需在 Supabase SQL Editor 执行：
+
+```text
+supabase/migration_2026_14_report_access.sql
+```
+
+该迁移为 Session 新增独立报告访问令牌，使报告可以在监督结束后刷新和重新打开。
 
 ## 手机摄像头要求
 

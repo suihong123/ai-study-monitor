@@ -71,6 +71,7 @@ create table if not exists sessions (
   estimated_cost numeric(10, 3),
   report_level text check (report_level in ('basic', 'standard', 'advanced')),
   session_token text,
+  report_token text not null default gen_random_uuid()::text,
   status text not null default 'active' check (
     status in ('active', 'completed', 'expired')
   ),
@@ -153,6 +154,7 @@ create table if not exists admin_actions (
 
 create index if not exists idx_access_codes_code on access_codes(code);
 create index if not exists idx_sessions_access_code_id on sessions(access_code_id);
+create unique index if not exists idx_sessions_report_token on sessions(report_token);
 create index if not exists idx_records_session_id on records(session_id);
 create index if not exists idx_error_logs_created_at on error_logs(created_at);
 create index if not exists idx_ai_call_logs_created_at on ai_call_logs(created_at);

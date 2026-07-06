@@ -6,13 +6,14 @@ import { CameraPreview } from "@/components/CameraPreview";
 import { ReportCard } from "@/components/ReportCard";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Timer } from "@/components/Timer";
+import { reportUrl, saveReportHistory } from "@/lib/report-history";
 import { calculateLearningInsights, calculateStats } from "@/lib/stats";
 import {
   intensityLabels,
   type AccessCode,
+  type GeneratedReport,
   type LearningState,
   type Presence,
-  type ReportLevel,
   type ReminderType,
   type StudyRecord,
   type StudySession,
@@ -31,16 +32,6 @@ type LastReminder = {
   type: ReminderType;
   text: string;
   timestamp: number;
-};
-
-type ReportState = {
-  stats: ReturnType<typeof calculateStats>;
-  summary: string;
-  conclusion: string;
-  parentAdvice: string;
-  trend: Record<string, string> | null;
-  records: StudyRecord[];
-  reportLevel: ReportLevel;
 };
 
 const reminderLabels: Record<ReminderType, string> = {
@@ -202,7 +193,8 @@ export default function SupervisePage() {
   const [awayDurationSeconds, setAwayDurationSeconds] = useState(0);
   const [awayCanRemind, setAwayCanRemind] = useState(false);
   const [lastAudioResult, setLastAudioResult] = useState("暂无声音播放记录");
-  const [completedReport, setCompletedReport] = useState<ReportState | null>(null);
+  const [completedReport, setCompletedReport] = useState<GeneratedReport | null>(null);
+  const [completedReportUrl, setCompletedReportUrl] = useState("");
 
   const elapsedMinutes = Math.floor(elapsedSeconds / 60);
   const todayRemainingMinutes = Math.max(
@@ -214,7 +206,6 @@ export default function SupervisePage() {
     (current?.totalRemainingMinutes ?? 0) - elapsedMinutes
   );
 
-  const stats = useMemo(() => calculateStats(records), [records]);
   const learningInsights = useMemo(
     () => calculateLearningInsights(records, Math.max(1, elapsedMinutes)),
     [elapsedMinutes, records]
@@ -1016,38 +1007,10 @@ export default function SupervisePage() {
       1,
       Math.ceil((Date.now() - startedAtRef.current.getTime()) / 60_000)
     );
-    const finalStats = calculateStats(finalRecords, durationMinutes);
+    const reportToken = activeSupervision.session.report_token;
 
     try {
-      const reportResponse = await fetch("/api/report", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          sessionId: activeSupervision.session.id,
-          accessCodeId: activeSupervision.accessCode.id,
-          records: finalRecords,
-          startTime: startedAtRef.current.toISOString(),
-          endTime,
-          stats: finalStats,
-          reportLevel: activeSupervision.accessCode.report_level,
-          sessionToken: activeSupervision.session.session_token
-        })
-      });
-      const report = await reportResponse.json();
-
-      const reportState: ReportState = {
-        stats: report.stats ?? finalStats,
-        summary: report.summary ?? "本次学习报告已生成。",
-        conclusion: report.conclusion ?? "本次学习报告已生成。",
-        parentAdvice: report.parentAdvice ?? "建议继续观察孩子的学习节奏。",
-        trend: report.trend ?? null,
-        records: finalRecords,
-        reportLevel: activeSupervision.accessCode.report_level
-      };
-
-      window.sessionStorage.setItem("latest-report", JSON.stringify(reportState));
-
-      await fetch("/api/access-code", {
+      const settlementResponse = await fetch("/api/access-code", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1062,15 +1025,73 @@ export default function SupervisePage() {
           sessionToken: activeSupervision.session.session_token
         })
       });
+      const settlement = await settlementResponse.json();
+      if (!settlementResponse.ok) {
+        throw new Error(settlement.error ?? "监督结算失败");
+      }
 
       window.sessionStorage.removeItem("current-supervision");
-      setCurrent(null);
-      setCompletedReport(reportState);
-    } finally {
       void releaseWakeLock();
       streamRef.current?.getTracks().forEach((track) => track.stop());
+
+      if (!reportToken) {
+        const fallbackStats = calculateStats(finalRecords, durationMinutes);
+        const fallbackReport: GeneratedReport = {
+          stats: fallbackStats,
+          summary: "本次监督已结束，当前为临时报告。",
+          conclusion: "本次报告已根据当前监督记录生成。",
+          parentAdvice: "建议结合实际学习情况查看。",
+          trend: null,
+          records: finalRecords,
+          reportLevel: activeSupervision.accessCode.report_level,
+          provider: "client-fallback",
+          session: {
+            id: activeSupervision.session.id,
+            startTime: startedAtRef.current.toISOString(),
+            endTime,
+            durationMinutes,
+            status: "completed"
+          }
+        };
+        window.sessionStorage.setItem("latest-report", JSON.stringify(fallbackReport));
+        setCompletedReportUrl("/report");
+        setCurrent(null);
+        setCompletedReport(fallbackReport);
+        return;
+      }
+
+      const historyEntry = {
+        sessionId: activeSupervision.session.id,
+        reportToken,
+        startTime: startedAtRef.current.toISOString(),
+        endTime
+      };
+      saveReportHistory(historyEntry);
+      const persistentReportUrl = reportUrl(historyEntry);
+      setCompletedReportUrl(persistentReportUrl);
+
+      const reportResponse = await fetch("/api/report", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sessionId: activeSupervision.session.id,
+          reportToken
+        })
+      });
+      if (!reportResponse.ok) {
+        router.push(persistentReportUrl);
+        return;
+      }
+      const report = (await reportResponse.json()) as GeneratedReport;
+
+      window.sessionStorage.setItem("latest-report", JSON.stringify(report));
+      setCurrent(null);
+      setCompletedReport(report);
+    } catch (error) {
+      finishingRef.current = false;
+      setCameraError(error instanceof Error ? error.message : "结束监督失败，请稍后重试。");
     }
-  }, [current, releaseWakeLock]);
+  }, [current, releaseWakeLock, router]);
 
   useEffect(() => {
     const raw = window.sessionStorage.getItem("current-supervision");
@@ -1278,7 +1299,7 @@ export default function SupervisePage() {
           <div className="mt-4 flex flex-col gap-2 sm:flex-row">
             <button
               type="button"
-              onClick={() => router.push("/report")}
+              onClick={() => router.push(completedReportUrl)}
               className="h-11 rounded-md bg-brand px-4 font-semibold text-white"
             >
               查看完整报告

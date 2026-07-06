@@ -24,15 +24,17 @@ export function ReportCard({
   const [expanded, setExpanded] = useState(false);
   const learningInsights = calculateLearningInsights(records, stats.totalMinutes);
   const isMockMode = records.length === 0 || records.some((record) => (record.analyze_mode ?? "mock") === "mock");
-  const insufficientData = stats.totalMinutes < 10 || records.length < 5;
-  const visibleRecords = expanded ? records : records.slice(0, 20);
+  const insufficientData =
+    stats.totalMinutes < 10 || records.length < 5 || (stats.dataCoverageRate ?? 0) < 50;
+  const keyTimelineRecords = buildKeyTimeline(records);
+  const visibleRecords = expanded ? records : keyTimelineRecords.slice(0, 20);
   const totalStatusCount =
     stats.studyingCount +
     stats.uncertainCount +
     stats.awayCount;
   const awayEventCount = countAwayEvents(records);
   const summary = insufficientData
-    ? "数据量不足，本报告仅供测试。请完成至少10分钟监督并产生5条以上识别记录后再查看学习诊断。"
+    ? "数据量或数据覆盖不足，本报告暂不生成学习诊断。请完成至少10分钟监督，并保持页面和摄像头正常运行。"
     : isMockMode
     ? "当前为测试模式，本次报告用于检查监督流程、摄像头角度和报告展示效果。"
     : buildOneLineSummary(stats);
@@ -41,8 +43,10 @@ export function ReportCard({
 
   const coreItems = [
     ["总监督时长", `${stats.totalMinutes}分钟`],
-    ["有效学习时长", `${stats.effectiveMinutes}分钟`],
-    ["专注率", records.length >= 5 ? `${stats.focusRate}%` : "数据采集中"],
+    ["明确学习时长", `${stats.effectiveMinutes}分钟`],
+    ["明确学习占比", records.length >= 5 ? `${stats.focusRate}%` : "数据采集中"],
+    ["数据覆盖率", `${stats.dataCoverageRate ?? 0}%`],
+    ["报告可信度", confidenceLabel(stats.dataConfidence)],
     ["离座事件", `${awayEventCount}次`],
     ["提醒次数", `${stats.reminderCount}次`],
     ["有效提醒", `${stats.effectiveReminderCount ?? 0}次`],
@@ -62,14 +66,17 @@ export function ReportCard({
       <div className="rounded-md border border-line bg-white p-5">
         <h2 className="text-xl font-semibold">学习表现总览</h2>
         <p className="mt-3 text-lg leading-8 text-ink">{summary}</p>
+        <div className={`mt-3 rounded-md p-3 text-sm leading-6 ${stats.dataConfidence === "high" ? "bg-blue-50 text-muted" : "bg-amber-50 text-warn"}`}>
+          报告可信度：{confidenceLabel(stats.dataConfidence)}。数据覆盖率 {stats.dataCoverageRate ?? 0}%
+          {stats.dataConfidence !== "high" && "，建议结合拍摄角度和实际学习情况判断。"}
+        </div>
         <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-4">
           {[
-            ["专注率", records.length >= 5 ? `${learningInsights.focusRate}%` : "数据采集中"],
-            ["学习评价", learningInsights.grade],
-            ["有效学习", `${learningInsights.studyingMinutes}分钟`],
-            ["无法判断", `${learningInsights.uncertainCount}次`],
-            ["离座记录", `${learningInsights.awayCount}次`],
-            ["提醒", `${stats.reminderCount}次`],
+            ["明确学习占比", records.length >= 5 ? `${learningInsights.focusRate}%` : "数据采集中"],
+            ["明确学习", `${learningInsights.studyingMinutes}分钟`],
+            ["数据覆盖", `${stats.dataCoverageRate ?? 0}%`],
+            ["报告可信度", confidenceLabel(stats.dataConfidence)],
+            ["离座事件", `${awayEventCount}次`],
             ["提醒有效率", stats.reminderCount > 0 ? `${stats.reminderResponseRate ?? 0}%` : "暂无提醒"]
           ].map(([label, value]) => (
             <div key={label} className="rounded-md bg-panel p-3">
@@ -89,7 +96,7 @@ export function ReportCard({
           </div>
         </div>
         <div className="mt-3 rounded-md bg-blue-50 p-4">
-          <div className="text-sm font-medium text-ink">AI总结</div>
+          <div className="text-sm font-medium text-ink">学习总结</div>
           <p className="mt-2 text-sm leading-6 text-muted">
             {buildInsightSummary(learningInsights)}
           </p>
@@ -129,7 +136,7 @@ export function ReportCard({
       </div>
 
       <div className="rounded-md border border-line bg-white p-5">
-        <h2 className="text-lg font-semibold">状态分布</h2>
+        <h2 className="text-lg font-semibold">识别记录分布</h2>
         <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3">
           {statusItems.map(([label, value]) => (
             <div key={label} className="rounded-md bg-panel p-3">
@@ -147,7 +154,7 @@ export function ReportCard({
         <h2 className="text-lg font-semibold">学习结论</h2>
         <p className="mt-3 whitespace-pre-line leading-7 text-muted">
           {insufficientData
-            ? "数据量不足，本报告仅供测试。当前不生成学习诊断。"
+            ? "数据量或数据覆盖不足，当前不生成学习诊断。"
             : conclusion}
         </p>
       </div>
@@ -162,7 +169,7 @@ export function ReportCard({
       </div>
 
       <div className="rounded-md border border-line bg-white p-5">
-        <h2 className="text-lg font-semibold">时间线详情</h2>
+        <h2 className="text-lg font-semibold">{expanded ? "全部识别记录" : "过程关键节点"}</h2>
         <div className="mt-4 space-y-3">
           {visibleRecords.length === 0 ? (
             <p className="text-sm text-muted">暂无识别记录。</p>
@@ -197,12 +204,12 @@ export function ReportCard({
             ))
           )}
         </div>
-        {records.length > 20 && !expanded && (
+        {records.length > visibleRecords.length && !expanded && (
           <button
             onClick={() => setExpanded(true)}
             className="mt-4 rounded-md border border-line px-4 py-2 text-sm font-medium"
           >
-            展开更多
+            查看全部识别记录
           </button>
         )}
       </div>
@@ -224,8 +231,27 @@ export function ReportCard({
   );
 }
 
+function confidenceLabel(value: StudyStats["dataConfidence"] | undefined) {
+  if (value === "high") return "较高";
+  if (value === "medium") return "一般";
+  return "较低";
+}
+
+function buildKeyTimeline(records: StudyRecord[]) {
+  return records.filter((record, index) => {
+    if (index === 0 || index === records.length - 1) return true;
+    if (record.triggered_reminder || record.manual_corrected) return true;
+    const current = normalizeRecordState(record);
+    const previous = normalizeRecordState(records[index - 1]);
+    return (
+      current.presence !== previous.presence ||
+      current.learningState !== previous.learningState
+    );
+  });
+}
+
 function buildOneLineSummary(stats: StudyStats) {
-  if (stats.focusRate >= 80) return "本次学习整体稳定，专注状态保持较好。";
+  if (stats.focusRate >= 80) return "本次明确学习行为占比较高，学习过程整体稳定。";
   if (stats.focusRate >= 60) return "本次学习有一定学习行为证据，也存在部分无法判断记录。";
   if (stats.focusRate >= 40) return "本次明确学习行为占比偏低，建议优化拍摄角度并缩短单次学习时长。";
   return "本次离座或无法判断较多，建议优先检查学习环境、拍摄角度和任务难度。";
@@ -284,7 +310,7 @@ function buildKeyEvents(records: StudyRecord[], stats: StudyStats, insufficientD
       : "本次未触发语音提醒",
     `最集中离座时段：${findAbnormalWindow(records)}`,
     stats.longestFocusMinutes > 0
-      ? `最长连续专注时长约 ${stats.longestFocusMinutes} 分钟`
+      ? `最长连续明确学习约 ${stats.longestFocusMinutes} 分钟`
       : "本次没有检测到连续稳定学习时段"
   ];
 

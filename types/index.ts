@@ -23,6 +23,7 @@ export type PlanType =
 export type ReportLevel = "basic" | "standard" | "advanced";
 
 export type SupervisionIntensity = "high" | "standard" | "low";
+export type DataConfidence = "high" | "medium" | "low";
 
 export type AccessCodeStatus =
   | "active"
@@ -100,6 +101,7 @@ export type StudySession = {
   estimated_cost: number | null;
   report_level: ReportLevel | null;
   session_token: string | null;
+  report_token?: string | null;
   status: string | null;
   ip: string | null;
   user_agent: string | null;
@@ -109,7 +111,12 @@ export type StudySession = {
 
 export type StudyStats = {
   totalMinutes: number;
+  observedMinutes: number;
+  dataCoverageRate: number;
+  dataConfidence: DataConfidence;
   effectiveMinutes: number;
+  uncertainMinutes: number;
+  awayMinutes: number;
   focusRate: number;
   studyingCount: number;
   uncertainCount: number;
@@ -130,13 +137,25 @@ export type StudyStats = {
 
 export type ReportPayload = {
   sessionId: string;
-  accessCodeId: string;
-  sessionToken: string;
-  records: StudyRecord[];
-  startTime: string;
-  endTime: string;
+  reportToken: string;
+};
+
+export type GeneratedReport = {
   stats: StudyStats;
+  summary: string;
+  conclusion: string;
+  parentAdvice: string;
+  trend: Record<string, string> | null;
+  records: StudyRecord[];
   reportLevel: ReportLevel;
+  provider?: string;
+  session: {
+    id: string;
+    startTime: string;
+    endTime: string;
+    durationMinutes: number | null;
+    status: string;
+  };
 };
 
 export const statusLabels: Record<StudyStatus, string> = {

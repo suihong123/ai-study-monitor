@@ -3,28 +3,56 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { ReportCard } from "@/components/ReportCard";
-import type { ReportLevel, StudyRecord, StudyStats } from "@/types";
-
-type ReportState = {
-  stats: StudyStats;
-  summary: string;
-  conclusion: string;
-  parentAdvice: string;
-  trend: Record<string, string> | null;
-  records: StudyRecord[];
-  reportLevel: ReportLevel;
-};
+import { appVersion } from "@/lib/version";
+import type { GeneratedReport } from "@/types";
 
 export default function ReportPage() {
-  const [report, setReport] = useState<ReportState | null>(null);
+  const [report, setReport] = useState<GeneratedReport | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
   const isMockMode =
     !report ||
     report.records.length === 0 ||
     report.records.some((record) => (record.analyze_mode ?? "mock") === "mock");
 
   useEffect(() => {
-    const raw = window.sessionStorage.getItem("latest-report");
-    if (raw) setReport(JSON.parse(raw) as ReportState);
+    const params = new URLSearchParams(window.location.search);
+    const sessionId = params.get("session_id");
+    const token = params.get("token");
+    const cached = window.sessionStorage.getItem("latest-report");
+    const cachedReport = cached ? (JSON.parse(cached) as GeneratedReport) : null;
+
+    if (!sessionId || !token) {
+      if (cachedReport) setReport(cachedReport);
+      setLoading(false);
+      return;
+    }
+    const activeSessionId = sessionId;
+    const activeToken = token;
+
+    async function loadReport() {
+      try {
+        const response = await fetch(
+          `/api/report?session_id=${encodeURIComponent(activeSessionId)}&token=${encodeURIComponent(activeToken)}`
+        );
+        const result = await response.json();
+        if (!response.ok) {
+          throw new Error(result.error ?? "报告加载失败");
+        }
+        setReport(result as GeneratedReport);
+        window.sessionStorage.setItem("latest-report", JSON.stringify(result));
+      } catch (loadError) {
+        if (cachedReport?.session?.id === activeSessionId) {
+          setReport(cachedReport);
+        } else {
+          setError(loadError instanceof Error ? loadError.message : "报告加载失败");
+        }
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    void loadReport();
   }, []);
 
   return (
@@ -45,9 +73,19 @@ export default function ReportPage() {
           </div>
         )}
         <p className="mt-2 text-muted">本次监督已结束。</p>
+        {report?.session && (
+          <div className="mt-2 text-sm leading-6 text-muted">
+            <div>{formatDateTime(report.session.startTime)} - {formatDateTime(report.session.endTime)}</div>
+            <div>报告版本：{appVersion.version}</div>
+          </div>
+        )}
       </div>
 
-      {report ? (
+      {loading ? (
+        <div className="rounded-md border border-line bg-white p-5 text-muted">
+          正在加载学习报告...
+        </div>
+      ) : report ? (
         <ReportCard
           stats={report.stats}
           conclusion={report.conclusion ?? report.summary}
@@ -58,16 +96,41 @@ export default function ReportPage() {
         />
       ) : (
         <div className="rounded-md border border-line bg-white p-5 text-muted">
-          暂无学习报告，请先完成一次监督。
+          {error || "暂无学习报告，请先完成一次监督。"}
         </div>
       )}
 
-      <Link
-        href="/"
-        className="mt-6 inline-flex h-11 w-fit items-center rounded-md bg-brand px-4 font-semibold text-white"
-      >
-        返回首页
-      </Link>
+      <div className="mt-6 flex flex-wrap gap-2 print:hidden">
+        {report && (
+          <button
+            type="button"
+            onClick={() => window.print()}
+            className="inline-flex h-11 items-center rounded-md border border-line px-4 font-semibold"
+          >
+            打印 / 保存PDF
+          </button>
+        )}
+        <Link
+          href="/"
+          className="inline-flex h-11 items-center rounded-md bg-brand px-4 font-semibold text-white"
+        >
+          返回首页
+        </Link>
+      </div>
+      {report && (
+        <p className="mt-5 text-xs leading-5 text-muted">
+          本报告由Session识别记录按时间段统计生成，不做身份识别，不代表对孩子能力或态度的评价。
+        </p>
+      )}
     </main>
   );
+}
+
+function formatDateTime(value: string) {
+  return new Date(value).toLocaleString("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit"
+  });
 }

@@ -1,8 +1,9 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { getDeviceId } from "@/lib/device";
+import { loadReportHistory, reportUrl, saveReportHistory, type ReportHistoryEntry } from "@/lib/report-history";
 import { appVersion } from "@/lib/version";
 import type { AccessCode, StudySession } from "@/types";
 
@@ -18,8 +19,13 @@ export default function HomePage() {
   const [code, setCode] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [reportHistory, setReportHistory] = useState<ReportHistoryEntry[]>([]);
   const [recoverableSupervision, setRecoverableSupervision] =
     useState<CurrentSupervision | null>(null);
+
+  useEffect(() => {
+    setReportHistory(loadReportHistory());
+  }, []);
 
   function enterSupervision(supervision: CurrentSupervision) {
     window.sessionStorage.setItem("current-supervision", JSON.stringify(supervision));
@@ -91,7 +97,19 @@ export default function HomePage() {
       }
       setRecoverableSupervision(null);
       window.sessionStorage.removeItem("current-supervision");
-      setError("已结束并结算未完成的监督，请重新开始。");
+      const reportToken = recoverableSupervision.session.report_token;
+      if (reportToken) {
+        const entry = {
+          sessionId: recoverableSupervision.session.id,
+          reportToken,
+          startTime: recoverableSupervision.session.start_time,
+          endTime: new Date().toISOString()
+        };
+        saveReportHistory(entry);
+        router.push(reportUrl(entry));
+        return;
+      }
+      setError("已结束并结算未完成的监督。");
     } catch {
       setError("网络异常，请稍后重试");
     } finally {
@@ -143,6 +161,25 @@ export default function HomePage() {
             {loading ? "正在验证" : "开始监督"}
           </button>
         </form>
+
+        {reportHistory.length > 0 && (
+          <section className="mt-4 rounded-md border border-line bg-white p-4">
+            <div className="text-sm font-semibold text-ink">最近报告</div>
+            <div className="mt-3 grid gap-2">
+              {reportHistory.slice(0, 3).map((item) => (
+                <button
+                  key={item.sessionId}
+                  type="button"
+                  onClick={() => router.push(reportUrl(item))}
+                  className="flex items-center justify-between rounded-md bg-panel px-3 py-3 text-left text-sm"
+                >
+                  <span>{formatReportDate(item.startTime)}</span>
+                  <span className="font-medium text-brand">查看报告</span>
+                </button>
+              ))}
+            </div>
+          </section>
+        )}
 
         <section className="mt-4 rounded-md border border-line bg-white p-4 text-sm leading-6 text-muted">
           <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
@@ -206,4 +243,13 @@ export default function HomePage() {
       )}
     </main>
   );
+}
+
+function formatReportDate(value: string) {
+  return new Date(value).toLocaleString("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit"
+  });
 }

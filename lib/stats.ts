@@ -1,8 +1,7 @@
-import type { LearningState, Presence, ReportLevel, StudyRecord, StudyStats } from "@/types";
+import type { DataConfidence, LearningState, Presence, ReportLevel, StudyRecord, StudyStats } from "@/types";
 import { costConfig } from "@/lib/costs";
 
 export function calculateStats(records: StudyRecord[], durationMinutes?: number): StudyStats {
-  const total = records.length;
   const normalized = records.map(normalizeRecordState);
   const countLearning = (state: LearningState) =>
     normalized.filter((record) => record.learningState === state && record.presence === "present").length;
@@ -10,9 +9,9 @@ export function calculateStats(records: StudyRecord[], durationMinutes?: number)
   const studyingCount = countLearning("studying");
   const uncertainCount = countLearning("uncertain");
   const thinkingCount = 0;
-  const effectiveCount = studyingCount;
-  const totalMinutes = durationMinutes ?? total;
-  const focusRate = total === 0 ? 0 : Math.round((effectiveCount / total) * 100);
+  const timeMetrics = calculateTimeMetrics(records, durationMinutes);
+  const totalMinutes = timeMetrics.totalMinutes;
+  const focusRate = timeMetrics.focusRate;
 
   const suspectedDistractedCount = 0;
   const distractedCount = 0;
@@ -20,24 +19,16 @@ export function calculateStats(records: StudyRecord[], durationMinutes?: number)
   const lyingCount = 0;
   const unrelatedCount = 0;
   const unknownCount = uncertainCount;
-  let longestStudyingStreak = 0;
-  let currentStudyingStreak = 0;
-  normalized.forEach((record) => {
-    if (
-      record.presence === "present" &&
-      record.learningState === "studying"
-    ) {
-      currentStudyingStreak += 1;
-      longestStudyingStreak = Math.max(longestStudyingStreak, currentStudyingStreak);
-    } else {
-      currentStudyingStreak = 0;
-    }
-  });
   const reminderEffectiveness = calculateReminderEffectiveness(records);
 
   return {
     totalMinutes,
-    effectiveMinutes: total === 0 ? 0 : Math.round((totalMinutes * effectiveCount) / total),
+    observedMinutes: timeMetrics.observedMinutes,
+    dataCoverageRate: timeMetrics.dataCoverageRate,
+    dataConfidence: timeMetrics.dataConfidence,
+    effectiveMinutes: timeMetrics.studyingMinutes,
+    uncertainMinutes: timeMetrics.uncertainMinutes,
+    awayMinutes: timeMetrics.awayMinutes,
     focusRate,
     studyingCount,
     uncertainCount,
@@ -53,7 +44,7 @@ export function calculateStats(records: StudyRecord[], durationMinutes?: number)
     effectiveReminderCount: reminderEffectiveness.effectiveReminderCount,
     reminderResponseRate: reminderEffectiveness.reminderResponseRate,
     averageRecoverySeconds: reminderEffectiveness.averageRecoverySeconds,
-    longestFocusMinutes: longestStudyingStreak
+    longestFocusMinutes: timeMetrics.longestFocusMinutes
   };
 }
 
@@ -139,11 +130,7 @@ export function calculateLearningInsights(records: StudyRecord[], durationMinute
   const awayCount = normalized.filter((record) => record.presence === "away").length;
   const unknownCount = uncertainCount;
   const accountableCount = studyingCount + uncertainCount + awayCount;
-  const focusRate =
-    accountableCount === 0
-      ? 0
-      : Math.round((studyingCount / accountableCount) * 100);
-  const baseMinutes = durationMinutes ?? accountableCount;
+  const timeMetrics = calculateTimeMetrics(records, durationMinutes);
 
   return {
     studyingCount,
@@ -153,18 +140,21 @@ export function calculateLearningInsights(records: StudyRecord[], durationMinute
     awayCount,
     unknownCount,
     accountableCount,
-    focusRate,
-    grade: learningGrade(focusRate),
-    gradeText: learningGradeText(focusRate),
-    studyingPercent: percentage(studyingCount, accountableCount),
-    uncertainPercent: percentage(uncertainCount, accountableCount),
+    focusRate: timeMetrics.focusRate,
+    grade: learningGrade(timeMetrics.focusRate),
+    gradeText: learningGradeText(timeMetrics.focusRate),
+    studyingPercent: percentage(timeMetrics.studyingSeconds, timeMetrics.observedSeconds),
+    uncertainPercent: percentage(timeMetrics.uncertainSeconds, timeMetrics.observedSeconds),
     thinkingPercent: 0,
     distractedPercent: percentage(distractedCount, accountableCount),
-    awayPercent: percentage(awayCount, accountableCount),
-    studyingMinutes: estimatedMinutes(studyingCount, accountableCount, baseMinutes),
-    uncertainMinutes: estimatedMinutes(uncertainCount, accountableCount, baseMinutes),
+    awayPercent: percentage(timeMetrics.awaySeconds, timeMetrics.observedSeconds),
+    studyingMinutes: timeMetrics.studyingMinutes,
+    uncertainMinutes: timeMetrics.uncertainMinutes,
     thinkingMinutes: 0,
-    abnormalMinutes: estimatedMinutes(awayCount, accountableCount, baseMinutes)
+    abnormalMinutes: timeMetrics.awayMinutes,
+    observedMinutes: timeMetrics.observedMinutes,
+    dataCoverageRate: timeMetrics.dataCoverageRate,
+    dataConfidence: timeMetrics.dataConfidence
   };
 }
 
@@ -172,8 +162,111 @@ function percentage(value: number, total: number) {
   return total === 0 ? 0 : Math.round((value / total) * 100);
 }
 
-function estimatedMinutes(value: number, total: number, durationMinutes: number) {
-  return total === 0 ? 0 : Math.round((durationMinutes * value) / total);
+function calculateTimeMetrics(records: StudyRecord[], durationMinutes?: number) {
+  const sorted = [...records].sort(
+    (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+  );
+  const timestamps = sorted.map((record) => new Date(record.timestamp).getTime());
+  const validDeltas = timestamps
+    .slice(0, -1)
+    .map((timestamp, index) => (timestamps[index + 1] - timestamp) / 1000)
+    .filter((seconds) => Number.isFinite(seconds) && seconds > 0 && seconds <= 300)
+    .sort((a, b) => a - b);
+  const medianInterval = validDeltas.length
+    ? validDeltas[Math.floor(validDeltas.length / 2)]
+    : 60;
+  const inferredSeconds =
+    sorted.length === 0
+      ? 0
+      : Math.max(
+          60,
+          (timestamps[timestamps.length - 1] - timestamps[0]) / 1000 + medianInterval
+        );
+  const totalSeconds = Math.max(
+    0,
+    durationMinutes === undefined ? inferredSeconds : durationMinutes * 60
+  );
+  let studyingSeconds = 0;
+  let uncertainSeconds = 0;
+  let awaySeconds = 0;
+  let longestFocusSeconds = 0;
+  let currentFocusSeconds = 0;
+
+  sorted.forEach((record, index) => {
+    const state = normalizeRecordState(record);
+    const expectedInterval = Math.min(
+      300,
+      Math.max(15, Number(record.current_frequency_seconds ?? medianInterval))
+    );
+    const rawInterval =
+      index < sorted.length - 1
+        ? (timestamps[index + 1] - timestamps[index]) / 1000
+        : expectedInterval;
+    const maxCredibleInterval = Math.min(300, Math.max(60, expectedInterval * 1.5));
+    const seconds = Math.max(
+      0,
+      Math.min(Number.isFinite(rawInterval) ? rawInterval : expectedInterval, maxCredibleInterval)
+    );
+
+    if (state.presence === "away") {
+      awaySeconds += seconds;
+      currentFocusSeconds = 0;
+    } else if (state.learningState === "studying") {
+      studyingSeconds += seconds;
+      currentFocusSeconds += seconds;
+      longestFocusSeconds = Math.max(longestFocusSeconds, currentFocusSeconds);
+    } else {
+      uncertainSeconds += seconds;
+      currentFocusSeconds = 0;
+    }
+  });
+
+  const rawObservedSeconds = studyingSeconds + uncertainSeconds + awaySeconds;
+  if (totalSeconds > 0 && rawObservedSeconds > totalSeconds) {
+    const scale = totalSeconds / rawObservedSeconds;
+    studyingSeconds *= scale;
+    uncertainSeconds *= scale;
+    awaySeconds *= scale;
+    longestFocusSeconds *= scale;
+  }
+  const observedSeconds = studyingSeconds + uncertainSeconds + awaySeconds;
+  const focusRate =
+    observedSeconds === 0 ? 0 : Math.round((studyingSeconds / observedSeconds) * 100);
+  const dataCoverageRate =
+    totalSeconds === 0 ? 0 : Math.min(100, Math.round((observedSeconds / totalSeconds) * 100));
+  const uncertainRate =
+    observedSeconds === 0 ? 1 : uncertainSeconds / observedSeconds;
+  const manualCorrectionRate =
+    records.length === 0
+      ? 0
+      : records.filter((record) => record.manual_corrected).length / records.length;
+  const hasMockRecords = records.some((record) => (record.analyze_mode ?? "mock") === "mock");
+  const dataConfidence: DataConfidence =
+    records.length < 5 || hasMockRecords || dataCoverageRate < 50
+      ? "low"
+      : dataCoverageRate >= 80 && uncertainRate <= 0.2 && manualCorrectionRate <= 0.2
+      ? "high"
+      : "medium";
+
+  return {
+    totalMinutes: Math.max(0, Math.round(totalSeconds / 60)),
+    observedSeconds,
+    studyingSeconds,
+    uncertainSeconds,
+    awaySeconds,
+    observedMinutes: roundMinutes(observedSeconds),
+    studyingMinutes: roundMinutes(studyingSeconds),
+    uncertainMinutes: roundMinutes(uncertainSeconds),
+    awayMinutes: roundMinutes(awaySeconds),
+    longestFocusMinutes: Number((longestFocusSeconds / 60).toFixed(1)),
+    focusRate,
+    dataCoverageRate,
+    dataConfidence
+  };
+}
+
+function roundMinutes(seconds: number) {
+  return Number((seconds / 60).toFixed(1));
 }
 
 function learningGrade(focusRate: number) {
