@@ -1591,48 +1591,57 @@ export default function SupervisePage() {
         </aside>
       </div>
       {current && !placementConfirmed && !needsRecoveryDecision && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="w-full max-w-lg rounded-md bg-white p-5 shadow-lg">
-            <h2 className="text-xl font-semibold">手机摆放确认</h2>
-            <p className="mt-3 text-sm leading-6 text-muted">
-              为了提高识别准确率，请将手机放在孩子侧前方约45°位置，并尽量拍到：
-            </p>
-            <ul className="mt-3 list-inside list-disc space-y-1 text-sm leading-6 text-muted">
-              <li>孩子上半身</li>
-              <li>双手</li>
-              <li>桌面</li>
-              <li>作业本/书本/屏幕</li>
-              <li>笔或文具</li>
-            </ul>
-            <div className="mt-4 rounded-md bg-panel p-3 text-xs leading-5 text-muted">
-              提醒声音会跟随手机或浏览器音量。请关闭静音模式，并把媒体音量调高。
-            </div>
-            {audioTestMessage && (
-              <div className="mt-3 rounded-md bg-panel p-3 text-xs leading-5 text-muted">
-                {audioTestMessage}
+        <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/50 p-3 py-4 sm:items-center sm:p-4">
+          <div className="flex max-h-[calc(100dvh-2rem)] w-full max-w-lg flex-col overflow-hidden rounded-md bg-white shadow-lg">
+            <div className="min-h-0 flex-1 overflow-y-auto p-5">
+              <h2 className="text-xl font-semibold">手机摆放确认</h2>
+              <p className="mt-3 text-sm leading-6 text-muted">
+                为了提高识别准确率，请将手机放在孩子侧前方约45°位置，并尽量拍到：
+              </p>
+              <ul className="mt-3 list-inside list-disc space-y-1 text-sm leading-6 text-muted">
+                <li>孩子上半身</li>
+                <li>双手</li>
+                <li>桌面</li>
+                <li>作业本/书本/屏幕</li>
+                <li>笔或文具</li>
+              </ul>
+              <div className="mt-4 rounded-md bg-panel p-3 text-xs leading-5 text-muted">
+                提醒声音会跟随手机或浏览器音量。请关闭静音模式，并把媒体音量调高。
               </div>
-            )}
-            <AudioTestSteps steps={audioTestSteps} />
-            <div className="mt-4 flex flex-col gap-2 sm:flex-row">
-              <button
-                type="button"
-                onClick={testReminderSound}
-                className="h-11 rounded-md border border-line px-4 font-medium"
-              >
-                测试提醒声音
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  void unlockLocalReminderAudio();
-                  void unlockReminderAudio();
-                  window.sessionStorage.setItem(`placement-confirmed-${current.session.id}`, "true");
-                  setPlacementConfirmed(true);
-                }}
-                className="h-11 rounded-md bg-brand px-4 font-semibold text-white"
-              >
-                我已放好，开始监督
-              </button>
+              {audioTestMessage && (
+                <div className="mt-3 rounded-md bg-panel p-3 text-xs leading-5 text-muted">
+                  {audioTestMessage}
+                </div>
+              )}
+              {audioTestSteps.length > 0 && (
+                <details className="mt-3 rounded-md bg-panel p-3 text-xs leading-5 text-muted">
+                  <summary className="cursor-pointer font-medium text-ink">查看声音测试详情</summary>
+                  <AudioTestSteps steps={audioTestSteps} />
+                </details>
+              )}
+            </div>
+            <div className="shrink-0 border-t border-line bg-white p-4">
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <button
+                  type="button"
+                  onClick={testReminderSound}
+                  className="h-11 rounded-md border border-line px-4 font-medium sm:flex-1"
+                >
+                  测试提醒声音
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void unlockLocalReminderAudio();
+                    void unlockReminderAudio();
+                    window.sessionStorage.setItem(`placement-confirmed-${current.session.id}`, "true");
+                    setPlacementConfirmed(true);
+                  }}
+                  className="h-11 rounded-md bg-brand px-4 font-semibold text-white sm:flex-1"
+                >
+                  我已放好，开始监督
+                </button>
+              </div>
             </div>
           </div>
         </div>
