@@ -125,18 +125,18 @@ export default function HomePage() {
             AI学习监督助手
           </h1>
           <p className="mt-3 text-lg leading-8 text-muted">
-            自动记录孩子作业状态
+            记录孩子学习节奏
             <br />
-            生成学习专注报告
+            帮助养成专注习惯
           </p>
         </div>
 
         <div className="mb-5 grid gap-2 rounded-md border border-line bg-white p-4 text-sm text-muted">
-          <div>记录真实学习时长</div>
-          <div>统计有效学习时间</div>
-          <div>发现离座和证据不足时段</div>
-          <div>生成每日学习报告</div>
-          <div>帮家长判断孩子是真学了，还是坐着耗时间</div>
+          <div>记录本次学习过程和连续学习时长</div>
+          <div>观察孩子平均专注时间是否逐步提升</div>
+          <div>发现容易中断学习的时间段</div>
+          <div>生成学习习惯反馈报告</div>
+          <div>帮助家长判断监督是否正在改善学习习惯</div>
         </div>
 
         <form onSubmit={start} className="rounded-md border border-line bg-white p-5">
