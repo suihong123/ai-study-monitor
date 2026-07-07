@@ -1,10 +1,11 @@
 "use client";
 
 import { useState } from "react";
-import { calculateLearningInsights, normalizeRecordState } from "@/lib/stats";
+import { normalizeRecordState } from "@/lib/stats";
 import { type ReportLevel, type StudyRecord, type StudyStats } from "@/types";
 
 type Trend = Record<string, string> | null;
+type HighlightTone = "brand" | "warn" | "alert" | "neutral";
 
 export function ReportCard({
   stats,
@@ -22,154 +23,145 @@ export function ReportCard({
   trend: Trend;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const learningInsights = calculateLearningInsights(records, stats.totalMinutes);
-  const isMockMode = records.length === 0 || records.some((record) => (record.analyze_mode ?? "mock") === "mock");
+  const isMockMode =
+    records.length === 0 ||
+    records.some((record) => (record.analyze_mode ?? "mock") === "mock");
   const insufficientData =
     stats.totalMinutes < 10 || records.length < 5 || (stats.dataCoverageRate ?? 0) < 50;
-  const keyTimelineRecords = buildKeyTimeline(records);
-  const visibleRecords = expanded ? records : keyTimelineRecords.slice(0, 20);
-  const totalStatusCount =
-    stats.studyingCount +
-    stats.uncertainCount +
-    stats.awayCount;
   const awayEventCount = countAwayEvents(records);
-  const summary = insufficientData
-    ? "数据量或数据覆盖不足，本报告暂不生成学习诊断。请完成至少10分钟监督，并保持页面和摄像头正常运行。"
-    : isMockMode
-    ? "当前为测试模式，本次报告用于检查监督流程、摄像头角度和报告展示效果。"
-    : buildOneLineSummary(stats);
-  const keyConcern = buildKeyConcern(stats, insufficientData);
-  const nextSuggestion = buildNextSuggestion(stats, insufficientData);
+  const overview = buildReportOverview(stats, records, insufficientData, isMockMode);
+  const focusItems = buildFocusItems(stats, records, insufficientData);
+  const nextActions = buildNextActions(stats, insufficientData);
+  const keyEvents = buildEventTimeline(records);
+  const visibleRecords = expanded ? records : buildKeyTimeline(records).slice(0, 12);
 
-  const coreItems = [
-    ["总监督时长", `${stats.totalMinutes}分钟`],
-    ["明确学习时长", `${stats.effectiveMinutes}分钟`],
-    ["明确学习占比", records.length >= 5 ? `${stats.focusRate}%` : "数据采集中"],
-    ["数据覆盖率", `${stats.dataCoverageRate ?? 0}%`],
-    ["报告可信度", confidenceLabel(stats.dataConfidence)],
+  const keyMetrics = [
+    ["总监督", `${stats.totalMinutes}分钟`],
+    ["明确学习", `${stats.effectiveMinutes}分钟`],
     ["离座事件", `${awayEventCount}次`],
-    ["提醒次数", `${stats.reminderCount}次`],
-    ["有效提醒", `${stats.effectiveReminderCount ?? 0}次`],
-    ["提醒恢复率", stats.reminderCount > 0 ? `${stats.reminderResponseRate ?? 0}%` : "暂无提醒"],
-    ["平均恢复时间", (stats.effectiveReminderCount ?? 0) > 0 ? formatRecoveryTime(stats.averageRecoverySeconds ?? 0) : "暂无数据"],
-    ["最长连续学习", `${stats.longestFocusMinutes}分钟`]
+    ["提醒次数", `${stats.reminderCount}次`]
   ];
 
-  const statusItems = [
-    ["学习中", stats.studyingCount],
-    ["无法判断", stats.uncertainCount],
-    ["离座", stats.awayCount]
+  const detailMetrics = [
+    ["明确学习占比", records.length >= 5 ? `${stats.focusRate}%` : "数据采集中"],
+    ["画面可用性", `${stats.dataCoverageRate ?? 0}%`],
+    ["无法判断", `${stats.uncertainMinutes}分钟`],
+    ["离座时长", `${stats.awayMinutes}分钟`],
+    ["最长连续学习", `${stats.longestFocusMinutes}分钟`],
+    ["提醒恢复率", stats.reminderCount > 0 ? `${stats.reminderResponseRate ?? 0}%` : "暂无提醒"]
   ];
 
   return (
     <section className="w-full space-y-5">
       <div className="rounded-md border border-line bg-white p-5">
-        <h2 className="text-xl font-semibold">学习表现总览</h2>
-        <p className="mt-3 text-lg leading-8 text-ink">{summary}</p>
-        <div className={`mt-3 rounded-md p-3 text-sm leading-6 ${stats.dataConfidence === "high" ? "bg-blue-50 text-muted" : "bg-amber-50 text-warn"}`}>
-          报告可信度：{confidenceLabel(stats.dataConfidence)}。数据覆盖率 {stats.dataCoverageRate ?? 0}%
-          {stats.dataConfidence !== "high" && "，建议结合拍摄角度和实际学习情况判断。"}
-        </div>
-        <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-4">
-          {[
-            ["明确学习占比", records.length >= 5 ? `${learningInsights.focusRate}%` : "数据采集中"],
-            ["明确学习", `${learningInsights.studyingMinutes}分钟`],
-            ["数据覆盖", `${stats.dataCoverageRate ?? 0}%`],
-            ["报告可信度", confidenceLabel(stats.dataConfidence)],
-            ["离座事件", `${awayEventCount}次`],
-            ["提醒有效率", stats.reminderCount > 0 ? `${stats.reminderResponseRate ?? 0}%` : "暂无提醒"]
-          ].map(([label, value]) => (
-            <div key={label} className="rounded-md bg-panel p-3">
-              <div className="text-sm text-muted">{label}</div>
-              <div className="mt-1 text-xl font-semibold">{value}</div>
-            </div>
-          ))}
-        </div>
-        <div className="mt-4 grid gap-3 md:grid-cols-2">
-          <div className="rounded-md bg-blue-50 p-4">
-            <div className="text-sm font-medium text-ink">本次最值得关注</div>
-            <p className="mt-2 text-sm leading-6 text-muted">{keyConcern}</p>
-          </div>
-          <div className="rounded-md bg-panel p-4">
-            <div className="text-sm font-medium text-ink">下次建议</div>
-            <p className="mt-2 text-sm leading-6 text-muted">{nextSuggestion}</p>
-          </div>
-        </div>
-        <div className="mt-3 rounded-md bg-blue-50 p-4">
-          <div className="text-sm font-medium text-ink">学习总结</div>
-          <p className="mt-2 text-sm leading-6 text-muted">
-            {buildInsightSummary(learningInsights)}
-          </p>
-        </div>
-      </div>
-
-      <div className="rounded-md border border-line bg-white p-5">
         <div className="flex flex-wrap items-center gap-2">
-          <h2 className="text-xl font-semibold">本次总结</h2>
+          <h2 className="text-xl font-semibold">学习表现总览</h2>
           {isMockMode && (
             <span className="rounded-md bg-amber-50 px-2 py-1 text-xs font-semibold text-warn">
               测试模式
             </span>
           )}
         </div>
-        <p className="mt-3 text-lg leading-8">{conclusion}</p>
-      </div>
+        <p className="mt-3 text-lg leading-8 text-ink">{overview.summary}</p>
 
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
-        {coreItems.map(([label, value]) => (
-          <div key={label} className="rounded-md border border-line bg-white p-4">
-            <div className="text-sm text-muted">{label}</div>
-            <div className="mt-1 text-2xl font-semibold">{value}</div>
-          </div>
-        ))}
-      </div>
-
-      <div className="rounded-md border border-line bg-white p-5">
-        <h2 className="text-lg font-semibold">
-          {isMockMode || insufficientData ? "测试关键事件" : "关键事件"}
-        </h2>
-        <div className="mt-3 space-y-2 text-sm leading-6 text-muted">
-          {buildKeyEvents(records, stats, insufficientData).map((item) => (
-            <div key={item} className="rounded-md bg-panel p-3">{item}</div>
+        <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-4">
+          {keyMetrics.map(([label, value]) => (
+            <div key={label} className="rounded-md bg-panel p-3">
+              <div className="text-sm text-muted">{label}</div>
+              <div className="mt-1 text-2xl font-semibold">{value}</div>
+            </div>
           ))}
+        </div>
+
+        <div className="mt-4 grid gap-3 md:grid-cols-2">
+          <HighlightBox
+            title="本次最该关注"
+            content={overview.concern}
+            tone={overview.concernTone}
+          />
+          <HighlightBox
+            title="下次怎么做"
+            content={overview.nextStep}
+            tone="neutral"
+          />
         </div>
       </div>
 
       <div className="rounded-md border border-line bg-white p-5">
-        <h2 className="text-lg font-semibold">识别记录分布</h2>
-        <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3">
-          {statusItems.map(([label, value]) => (
-            <div key={label} className="rounded-md bg-panel p-3">
-              <div className="text-sm text-muted">{label}</div>
-              <div className="mt-1 text-xl font-semibold">{value}次</div>
-              <div className="mt-1 text-sm text-muted">
-                占比 {totalStatusCount === 0 ? 0 : Math.round((Number(value) / totalStatusCount) * 100)}%
-              </div>
+        <h2 className="text-lg font-semibold">学习表现诊断</h2>
+        <div className="mt-4 grid gap-3 md:grid-cols-3">
+          {focusItems.map((item) => (
+            <div key={item.title} className={`rounded-md p-4 ${toneClass(item.tone)}`}>
+              <div className="text-sm font-medium text-ink">{item.title}</div>
+              <p className="mt-2 text-sm leading-6 text-muted">{item.content}</p>
             </div>
           ))}
         </div>
       </div>
 
       <div className="rounded-md border border-line bg-white p-5">
-        <h2 className="text-lg font-semibold">学习结论</h2>
-        <p className="mt-3 whitespace-pre-line leading-7 text-muted">
-          {insufficientData
-            ? "数据量或数据覆盖不足，当前不生成学习诊断。"
-            : conclusion}
-        </p>
+        <h2 className="text-lg font-semibold">本次关键节点</h2>
+        <div className="mt-4 space-y-3">
+          {keyEvents.length === 0 ? (
+            <p className="text-sm leading-6 text-muted">
+              本次识别记录较少，暂未形成关键节点。建议完成至少10分钟监督后再查看。
+            </p>
+          ) : (
+            keyEvents.map((event, index) => (
+              <div key={`${event.time}-${index}`} className="rounded-md bg-panel p-3 text-sm">
+                <div className="font-semibold">{event.time}</div>
+                <div className="mt-1 text-ink">{event.title}</div>
+                {event.detail && (
+                  <div className="mt-1 leading-5 text-muted">{event.detail}</div>
+                )}
+              </div>
+            ))
+          )}
+        </div>
       </div>
 
       <div className="rounded-md border border-line bg-white p-5">
         <h2 className="text-lg font-semibold">给家长的建议</h2>
-        <p className="mt-3 whitespace-pre-line leading-7 text-muted">
-          {insufficientData
-            ? "建议先完成一段不少于10分钟的监督，确认摄像头角度、识别记录和报告生成流程稳定后，再参考学习建议。"
-            : parentAdvice}
-        </p>
+        <div className="mt-3 space-y-2 text-sm leading-6 text-muted">
+          {nextActions.map((item) => (
+            <div key={item} className="rounded-md bg-panel p-3">{item}</div>
+          ))}
+        </div>
       </div>
 
       <div className="rounded-md border border-line bg-white p-5">
-        <h2 className="text-lg font-semibold">{expanded ? "全部识别记录" : "过程关键节点"}</h2>
+        <h2 className="text-lg font-semibold">趋势分析</h2>
+        <div className="mt-3 rounded-md bg-amber-50 p-4 text-sm leading-6 text-warn">
+          {buildTrendMessage(reportLevel, trend, records, insufficientData)}
+        </div>
+      </div>
+
+      <details className="rounded-md border border-line bg-white p-5">
+        <summary className="cursor-pointer text-lg font-semibold">详细数据</summary>
+        <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-3">
+          {detailMetrics.map(([label, value]) => (
+            <div key={label} className="rounded-md bg-panel p-3">
+              <div className="text-sm text-muted">{label}</div>
+              <div className="mt-1 text-xl font-semibold">{value}</div>
+            </div>
+          ))}
+        </div>
+        <div className="mt-4 grid grid-cols-3 gap-3">
+          {[
+            ["学习中", stats.studyingCount],
+            ["无法判断", stats.uncertainCount],
+            ["离座", stats.awayCount]
+          ].map(([label, value]) => (
+            <div key={label} className="rounded-md bg-panel p-3">
+              <div className="text-sm text-muted">{label}</div>
+              <div className="mt-1 text-xl font-semibold">{value}次</div>
+            </div>
+          ))}
+        </div>
+      </details>
+
+      <div className="rounded-md border border-line bg-white p-5">
+        <h2 className="text-lg font-semibold">{expanded ? "全部识别记录" : "过程记录"}</h2>
         <div className="mt-4 space-y-3">
           {visibleRecords.length === 0 ? (
             <p className="text-sm text-muted">暂无识别记录。</p>
@@ -186,11 +178,6 @@ export function ReportCard({
                   <span className="text-muted">
                     {record.triggered_reminder ? "已提醒" : "未提醒"}
                   </span>
-                  {typeof record.confidence === "number" && (
-                    <span className="text-muted">
-                      置信度：{Math.round(record.confidence * 100)}%
-                    </span>
-                  )}
                   {record.manual_corrected && (
                     <span className="rounded-md bg-amber-50 px-2 py-1 text-warn">
                       已手动纠正
@@ -214,27 +201,171 @@ export function ReportCard({
         )}
       </div>
 
-      {reportLevel !== "basic" && trend && !isMockMode && !insufficientData && (
-        <div className="rounded-md border border-line bg-white p-5">
-          <h2 className="text-lg font-semibold">趋势分析</h2>
-          <div className="mt-4 grid gap-3">
-            {Object.entries(trend).map(([key, value]) => (
-              <div key={key} className="rounded-md bg-panel p-3">
-                <div className="text-sm font-medium text-ink">{trendTitle(key)}</div>
-                <div className="mt-1 text-sm leading-6 text-muted">{value}</div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
+      <div className="rounded-md border border-line bg-white p-5">
+        <h2 className="text-lg font-semibold">原始结论</h2>
+        <p className="mt-3 whitespace-pre-line leading-7 text-muted">
+          {insufficientData ? "数据量或数据覆盖不足，当前不生成学习诊断。" : conclusion}
+        </p>
+        <p className="mt-3 whitespace-pre-line leading-7 text-muted">
+          {insufficientData
+            ? "建议先完成一段不少于10分钟的监督，确认摄像头角度、识别记录和报告生成流程稳定后，再参考学习建议。"
+            : parentAdvice}
+        </p>
+      </div>
     </section>
   );
 }
 
-function confidenceLabel(value: StudyStats["dataConfidence"] | undefined) {
-  if (value === "high") return "较高";
-  if (value === "medium") return "一般";
-  return "较低";
+function HighlightBox({
+  title,
+  content,
+  tone
+}: {
+  title: string;
+  content: string;
+  tone: HighlightTone;
+}) {
+  return (
+    <div className={`rounded-md p-4 ${toneClass(tone)}`}>
+      <div className="text-sm font-medium text-ink">{title}</div>
+      <p className="mt-2 text-sm leading-6 text-muted">{content}</p>
+    </div>
+  );
+}
+
+function toneClass(tone: HighlightTone) {
+  if (tone === "brand") return "bg-blue-50";
+  if (tone === "warn") return "bg-amber-50";
+  if (tone === "alert") return "bg-red-50";
+  return "bg-panel";
+}
+
+function buildReportOverview(
+  stats: StudyStats,
+  records: StudyRecord[],
+  insufficientData: boolean,
+  isMockMode: boolean
+) {
+  const awayEventCount = countAwayEvents(records);
+
+  if (insufficientData) {
+    return {
+      summary: "本次数据样本不足，暂不判断学习表现。建议完成至少10分钟监督后再查看报告。",
+      concern: "当前最需要关注的是数据是否足够，而不是孩子表现本身。",
+      concernTone: "warn" as HighlightTone,
+      nextStep: "下次请保持页面前台运行，并确保摄像头能看到上半身、双手和桌面。"
+    };
+  }
+
+  if (isMockMode) {
+    return {
+      summary: "当前为测试数据，本报告主要用于验证监督流程和报告展示效果。",
+      concern: "测试模式下不要根据报告判断孩子真实学习状态。",
+      concernTone: "warn" as HighlightTone,
+      nextStep: "建议重点测试摄像头角度、提醒声音和报告生成流程。"
+    };
+  }
+
+  const summary = `本次监督 ${stats.totalMinutes} 分钟，明确学习约 ${stats.effectiveMinutes} 分钟，离座事件 ${awayEventCount} 次，触发提醒 ${stats.reminderCount} 次。`;
+
+  if (awayEventCount >= 2) {
+    return {
+      summary,
+      concern: "本次最需要关注的是中途离座偏多，学习连续性受到影响。",
+      concernTone: "alert" as HighlightTone,
+      nextStep: "学习前先准备好水杯、文具和作业材料，减少中途离开座位。"
+    };
+  }
+
+  if (stats.dataConfidence !== "high" || stats.uncertainCount >= 3) {
+    return {
+      summary,
+      concern: "本次画面可用性一般，部分时间无法稳定判断学习状态。",
+      concernTone: "warn" as HighlightTone,
+      nextStep: "手机放在孩子侧前方45度，尽量同时看到上半身、双手和作业区域。"
+    };
+  }
+
+  if (stats.focusRate >= 80) {
+    return {
+      summary,
+      concern: "本次学习过程整体稳定，能看到较多明确学习行为。",
+      concernTone: "brand" as HighlightTone,
+      nextStep: "继续保持当前学习环境，结束后让孩子用1分钟复盘完成情况。"
+    };
+  }
+
+  return {
+    summary,
+    concern: "本次明确学习行为占比不高，需要结合任务难度和学习环境继续观察。",
+    concernTone: "warn" as HighlightTone,
+    nextStep: "建议先采用20到25分钟短监督，逐步建立稳定学习节奏。"
+  };
+}
+
+function buildFocusItems(
+  stats: StudyStats,
+  records: StudyRecord[],
+  insufficientData: boolean
+) {
+  const awayEventCount = countAwayEvents(records);
+  const coverageText =
+    stats.dataConfidence === "high"
+      ? "本次画面覆盖较稳定，报告参考价值较高。"
+      : "本次画面覆盖还不够稳定，建议优先改善拍摄角度。";
+
+  return [
+    {
+      title: "学习连续性",
+      content: insufficientData
+        ? "数据不足，暂不判断连续学习情况。"
+        : stats.longestFocusMinutes > 0
+        ? `最长连续明确学习约 ${stats.longestFocusMinutes} 分钟。`
+        : "本次没有形成明显连续学习片段。",
+      tone: stats.longestFocusMinutes >= 10 ? "brand" as HighlightTone : "neutral" as HighlightTone
+    },
+    {
+      title: "离座情况",
+      content:
+        awayEventCount === 0
+          ? "本次没有形成明显离座事件。"
+          : `本次出现 ${awayEventCount} 次离座事件，需要关注学习前准备是否充分。`,
+      tone: awayEventCount >= 2 ? "alert" as HighlightTone : "neutral" as HighlightTone
+    },
+    {
+      title: "画面可用性",
+      content: coverageText,
+      tone: stats.dataConfidence === "high" ? "brand" as HighlightTone : "warn" as HighlightTone
+    }
+  ];
+}
+
+function buildNextActions(stats: StudyStats, insufficientData: boolean) {
+  if (insufficientData) {
+    return [
+      "先完成一段不少于10分钟的监督，积累足够识别记录。",
+      "监督时保持手机固定，避免页面切后台或锁屏。",
+      "确保画面能看到孩子上半身、双手、桌面和作业区域。"
+    ];
+  }
+
+  const actions: string[] = [];
+  if (stats.awayCount >= 2) {
+    actions.push("学习前准备好水杯、文具、作业材料，减少中途离座。");
+  }
+  if (stats.uncertainCount >= 3 || stats.dataConfidence !== "high") {
+    actions.push("调整手机角度，优先保证能看到双手和作业区域。");
+  }
+  if (stats.focusRate < 70) {
+    actions.push("下次先用20到25分钟一段的短监督，降低单次学习压力。");
+  }
+  if (stats.reminderCount > 0 && (stats.reminderResponseRate ?? 0) < 50) {
+    actions.push("提醒后恢复不明显时，建议家长检查任务是否过难或环境是否有持续干扰。");
+  }
+  if (actions.length === 0) {
+    actions.push("继续保持当前学习环境，结束后让孩子简短复盘完成内容。");
+  }
+  return actions;
 }
 
 function buildKeyTimeline(records: StudyRecord[]) {
@@ -250,78 +381,54 @@ function buildKeyTimeline(records: StudyRecord[]) {
   });
 }
 
-function buildOneLineSummary(stats: StudyStats) {
-  if (stats.focusRate >= 80) return "本次明确学习行为占比较高，学习过程整体稳定。";
-  if (stats.focusRate >= 60) return "本次学习有一定学习行为证据，也存在部分无法判断记录。";
-  if (stats.focusRate >= 40) return "本次明确学习行为占比偏低，建议优化拍摄角度并缩短单次学习时长。";
-  return "本次离座或无法判断较多，建议优先检查学习环境、拍摄角度和任务难度。";
-}
+function buildEventTimeline(records: StudyRecord[]) {
+  const events: Array<{ time: string; title: string; detail?: string }> = [];
+  const keyRecords = buildKeyTimeline(records).slice(0, 8);
 
-function buildKeyConcern(stats: StudyStats, insufficientData: boolean) {
-  if (insufficientData) return "本次数据量偏少，暂时不判断学习表现。";
-  if (stats.reminderCount >= 2 && (stats.reminderResponseRate ?? 0) < 50) {
-    return "本次多次提醒后恢复学习的比例偏低，需要关注任务难度或环境干扰。";
-  }
-  if (stats.awayCount >= 2) return "本次最需要关注的是离座识别记录偏多。";
-  if (stats.uncertainCount >= 3) return "本次最需要关注的是画面无法判断次数偏多。";
-  if (stats.focusRate >= 80) return "本次整体表现较稳定，建议保持当前学习节奏。";
-  return "本次明确学习行为偏少，建议关注任务难度和学习环境。";
-}
+  keyRecords.forEach((record, index) => {
+    const state = normalizeRecordState(record);
+    const previous = index > 0 ? normalizeRecordState(keyRecords[index - 1]) : null;
+    const time = formatMinute(record.timestamp);
 
-function buildNextSuggestion(stats: StudyStats, insufficientData: boolean) {
-  if (insufficientData) return "下次建议监督满10分钟以上，并确保能看到上半身、双手和桌面。";
-  if (stats.awayCount >= 2) return "下次开始前先准备好水杯、文具和作业材料，减少中途离座。";
-  if (stats.uncertainCount >= 3) return "下次把手机放在侧前方45度，尽量同时拍到上半身、双手和作业区域。";
-  if (stats.focusRate >= 80) return "下次可以继续保持当前节奏，结束后让孩子简短复盘完成情况。";
-  return "下次可以采用25分钟学习加5分钟休息，并减少桌面无关物品。";
-}
+    if (index === 0) {
+      events.push({
+        time,
+        title: `开始记录：${displayStateText(record)}`,
+        detail: record.triggered_reminder ? "本次记录触发了提醒。" : undefined
+      });
+      return;
+    }
 
-function buildInsightSummary(insights: ReturnType<typeof calculateLearningInsights>) {
-  if (insights.accountableCount === 0) {
-    return "本次有效识别数据较少，建议先调整拍摄角度，完成一段稳定监督后再查看学习分析。";
-  }
-  if (insights.focusRate >= 90) {
-    return "本次学习行为证据较稳定，大部分时间能够看到明确学习动作。";
-  }
-  if (insights.awayCount >= 2) {
-    return "本次学习过程中出现多次离座，建议优化学习环境，提前准备好文具、作业材料和水杯。";
-  }
-  if (insights.uncertainCount >= 3) {
-    return "本次存在多次无法判断记录，建议调整手机角度，确保能看到上半身、双手和作业区域。";
-  }
-  if (insights.focusRate >= 80) {
-    return "本次学习整体表现良好，大部分时间能够看到明确学习行为。";
-  }
-  if (insights.focusRate >= 70) {
-    return "本次学习基本稳定，建议继续观察无法判断出现的时间段。";
-  }
-  return "本次离座或无法判断较多，建议缩短单次学习时长，并优化拍摄角度。";
-}
+    if (!previous || state.presence !== previous.presence || state.learningState !== previous.learningState) {
+      events.push({
+        time,
+        title: displayTransitionTitle(record),
+        detail: record.triggered_reminder
+          ? "系统已提醒。"
+          : record.manual_corrected
+          ? "用户已手动标记。"
+          : undefined
+      });
+      return;
+    }
 
-function buildKeyEvents(records: StudyRecord[], stats: StudyStats, insufficientData: boolean) {
-  const events = [
-    `本次无法判断 ${stats.uncertainCount} 次`,
-    `本次离座事件 ${countAwayEvents(records)} 次`,
-    `本次离座识别记录 ${stats.awayCount} 条`,
-    `本次触发提醒 ${stats.reminderCount} 次`,
-    `其中 ${stats.effectiveReminderCount ?? 0} 次提醒后在3分钟内恢复学习`,
-    stats.reminderCount > 0
-      ? `提醒恢复率 ${stats.reminderResponseRate ?? 0}%`
-      : "本次未触发语音提醒",
-    `最集中离座时段：${findAbnormalWindow(records)}`,
-    stats.longestFocusMinutes > 0
-      ? `最长连续明确学习约 ${stats.longestFocusMinutes} 分钟`
-      : "本次没有检测到连续稳定学习时段"
-  ];
-
-  if (insufficientData) {
-    return [
-      "识别记录少于5条或监督时长不足10分钟，暂不生成学习诊断。",
-      ...events
-    ];
-  }
+    if (record.triggered_reminder || record.manual_corrected) {
+      events.push({
+        time,
+        title: record.triggered_reminder ? "触发提醒" : "用户手动标记",
+        detail: displayStateText(record)
+      });
+    }
+  });
 
   return events;
+}
+
+function displayTransitionTitle(record: StudyRecord) {
+  const state = normalizeRecordState(record);
+  if (state.presence === "away") return "检测到离座";
+  if (state.learningState === "studying") return "恢复到明确学习";
+  return "画面证据不足";
 }
 
 function countAwayEvents(records: StudyRecord[]) {
@@ -337,20 +444,25 @@ function countAwayEvents(records: StudyRecord[]) {
   return count;
 }
 
-function formatRecoveryTime(seconds: number) {
-  if (seconds < 60) return `${seconds}秒`;
-  return `${Math.floor(seconds / 60)}分${seconds % 60}秒`;
-}
+function buildTrendMessage(
+  reportLevel: ReportLevel,
+  trend: Trend,
+  records: StudyRecord[],
+  insufficientData: boolean
+) {
+  if (insufficientData || records.length < 20) {
+    return "趋势分析需要积累足够的数据样本。建议至少完成多次有效监督，或单次监督达到20条以上识别记录后，再查看趋势变化。";
+  }
 
-function findAbnormalWindow(records: StudyRecord[]) {
-  const abnormal = records.filter((record) => {
-    const state = normalizeRecordState(record);
-    return state.presence === "away";
-  });
-  if (abnormal.length === 0) return "未出现集中异常";
-  const first = abnormal[0];
-  const last = abnormal[Math.min(abnormal.length - 1, 2)];
-  return `${formatMinute(first.timestamp)}-${formatMinute(last.timestamp)}`;
+  if (reportLevel === "basic") {
+    return "当前套餐展示基础报告。趋势分析需要积累多次监督数据后再开放参考。";
+  }
+
+  if (!trend) {
+    return "当前历史样本不足，暂不生成趋势判断。";
+  }
+
+  return "已有一定识别记录，但长期趋势仍需要更多天的监督样本支撑。当前阶段建议先关注本次监督的关键节点和下次建议。";
 }
 
 function displayStateText(record: StudyRecord) {
@@ -365,18 +477,4 @@ function formatMinute(value: string) {
     hour: "2-digit",
     minute: "2-digit"
   });
-}
-
-function trendTitle(key: string) {
-  const titles: Record<string, string> = {
-    declinePeriod: "专注下降时间段",
-    statusSummary: "学习状态总结",
-    segmentSuggestion: "是否建议分段学习",
-    sevenDayTrend: "最近7天趋势",
-    weekOverWeek: "与上周同比",
-    distractionWindow: "无法判断高发时间段",
-    learningProfile: "学习状态画像",
-    interventionAdvice: "家长干预建议"
-  };
-  return titles[key] ?? key;
 }
