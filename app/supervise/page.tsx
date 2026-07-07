@@ -180,6 +180,7 @@ export default function SupervisePage() {
   const [records, setRecords] = useState<StudyRecord[]>([]);
   const [cameraError, setCameraError] = useState("");
   const [cameraFacing, setCameraFacing] = useState<CameraFacing>("environment");
+  const [cameraRetryKey, setCameraRetryKey] = useState(0);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [analyzing, setAnalyzing] = useState(false);
   const [currentIntervalSeconds, setCurrentIntervalSeconds] = useState(60);
@@ -982,6 +983,16 @@ export default function SupervisePage() {
     );
   }, []);
 
+  const retryCamera = useCallback(() => {
+    setCameraError("");
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+    setCameraRetryKey((value) => value + 1);
+  }, []);
+
   const releaseWakeLock = useCallback(async () => {
     const wakeLock = wakeLockRef.current;
     wakeLockRef.current = null;
@@ -1150,6 +1161,7 @@ export default function SupervisePage() {
           audio: false
         });
         if (cancelled) return;
+        setCameraError("");
         streamRef.current = stream;
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
@@ -1158,8 +1170,9 @@ export default function SupervisePage() {
         calibrationAnalyzeTimersRef.current = [1200, 20_000, 50_000].map((delay) =>
           window.setTimeout(() => void analyzeRef.current(), delay)
         );
-      } catch {
-        setCameraError("无法打开摄像头，请确认浏览器权限和HTTPS访问，或尝试切换前置/后置摄像头。");
+      } catch (error) {
+        const cameraErrorMessage = cameraPermissionHelpMessage(error, cameraFacing);
+        setCameraError(cameraErrorMessage);
         void fetch("/api/client-error", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1168,7 +1181,7 @@ export default function SupervisePage() {
             sessionId: activeSupervision.session.id,
             sessionToken: activeSupervision.session.session_token,
             errorType: "摄像头权限失败",
-            errorMessage: `无法打开${cameraFacing === "environment" ? "后置" : "前置"}摄像头，请确认浏览器权限和HTTPS访问。`
+            errorMessage: cameraErrorMessage
           })
         });
       }
@@ -1181,7 +1194,7 @@ export default function SupervisePage() {
       calibrationAnalyzeTimersRef.current = [];
       streamRef.current?.getTracks().forEach((track) => track.stop());
     };
-  }, [cameraFacing, current, needsRecoveryDecision, placementConfirmed]);
+  }, [cameraFacing, cameraRetryKey, current, needsRecoveryDecision, placementConfirmed]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -1407,9 +1420,32 @@ export default function SupervisePage() {
             </button>
           </div>
           {cameraError && (
-            <p className="mt-3 rounded-md border border-alert bg-red-50 p-3 text-sm text-alert">
-              {cameraError}
-            </p>
+            <div className="mt-3 rounded-md border border-alert bg-red-50 p-3 text-sm leading-6 text-alert">
+              <div className="font-semibold">相机授权失败</div>
+              <div className="mt-1">{cameraError}</div>
+              <div className="mt-2 text-xs leading-5 text-alert/90">
+                安卓手机如果提示“关闭气泡或叠加层”，请先关闭微信气泡、录屏悬浮按钮、手机管家悬浮球、翻译悬浮窗、小窗模式等，再重新打开相机。
+              </div>
+              <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+                <button
+                  type="button"
+                  onClick={retryCamera}
+                  className="h-10 rounded-md bg-alert px-3 font-semibold text-white"
+                >
+                  重新打开相机
+                </button>
+                <button
+                  type="button"
+                  onClick={switchCameraFacing}
+                  className="h-10 rounded-md border border-alert px-3 font-medium text-alert"
+                >
+                  切换到{cameraFacing === "environment" ? "前置摄像头" : "后置摄像头"}
+                </button>
+              </div>
+              <div className="mt-2 text-xs leading-5 text-alert/90">
+                如果 Edge 仍无法授权，建议用 Chrome 浏览器打开同一网址测试。
+              </div>
+            </div>
           )}
           {shouldShowAngleWarning && (
             <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm leading-6 text-warn">
@@ -1717,6 +1753,25 @@ function timeDefaultInterval(elapsedMinutes: number) {
 
 function applyPlanLimit(desiredInterval: number, accessCode: AccessCode) {
   return Math.max(desiredInterval, accessCode.min_interval_seconds);
+}
+
+function cameraPermissionHelpMessage(error: unknown, cameraFacing: CameraFacing) {
+  const cameraLabel = cameraFacing === "environment" ? "后置摄像头" : "前置摄像头";
+  const errorName = error instanceof DOMException ? error.name : "";
+
+  if (errorName === "NotAllowedError" || errorName === "SecurityError") {
+    return `无法授权${cameraLabel}。请检查浏览器相机权限；安卓手机如出现气泡或叠加层提示，请关闭其他应用悬浮窗后点击“重新打开相机”。`;
+  }
+
+  if (errorName === "NotFoundError" || errorName === "OverconstrainedError") {
+    return `未找到可用的${cameraLabel}。请尝试切换前置/后置摄像头，或确认没有其他应用正在占用相机。`;
+  }
+
+  if (errorName === "NotReadableError") {
+    return `暂时无法读取${cameraLabel}。可能有其他应用正在使用相机，请关闭后重试。`;
+  }
+
+  return `无法打开${cameraLabel}。请确认浏览器相机权限和 HTTPS 访问，或关闭悬浮窗后重试。`;
 }
 
 function slowerInterval(currentDefaultInterval: number) {
