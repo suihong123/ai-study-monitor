@@ -140,12 +140,38 @@ export type ReportPayload = {
   reportToken: string;
 };
 
+export type HabitTrendSession = {
+  sessionId: string;
+  startTime: string;
+  durationMinutes: number;
+  averageFocusMinutes: number;
+  longestFocusMinutes: number;
+  interruptionCount: number;
+  reminderCount: number;
+  reminderResponseRate: number;
+  dataCoverageRate: number;
+};
+
+export type HabitTrend = {
+  sampleCount: number;
+  requiredSampleCount: number;
+  isEnoughData: boolean;
+  direction: "improving" | "stable" | "declining" | "insufficient";
+  summary: string;
+  currentAverageFocusMinutes: number;
+  previousAverageFocusMinutes: number | null;
+  currentLongestFocusMinutes: number;
+  averageReminderResponseRate: number;
+  sessions: HabitTrendSession[];
+};
+
 export type GeneratedReport = {
   stats: StudyStats;
   summary: string;
   conclusion: string;
   parentAdvice: string;
   trend: Record<string, string> | null;
+  habitTrend?: HabitTrend | null;
   records: StudyRecord[];
   reportLevel: ReportLevel;
   provider?: string;

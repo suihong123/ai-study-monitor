@@ -1348,6 +1348,7 @@ export default function SupervisePage() {
           records={completedReport.records}
           reportLevel={completedReport.reportLevel}
           trend={completedReport.trend}
+          habitTrend={completedReport.habitTrend ?? null}
         />
       </main>
     );

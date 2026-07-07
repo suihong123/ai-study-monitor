@@ -93,6 +93,7 @@ export default function ReportPage() {
           records={report.records ?? []}
           reportLevel={report.reportLevel ?? "basic"}
           trend={report.trend ?? null}
+          habitTrend={report.habitTrend ?? null}
         />
       ) : (
         <div className="rounded-md border border-line bg-white p-5 text-muted">

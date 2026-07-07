@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { estimateReportCost } from "@/lib/costs";
 import { checkRateLimit, logAiCall, logError } from "@/lib/security";
-import { calculateStats } from "@/lib/stats";
+import { calculateStats, normalizeRecordState } from "@/lib/stats";
 import { supabaseAdmin } from "@/lib/supabase/server";
-import type { ReportLevel, ReportPayload, StudyRecord } from "@/types";
+import type { HabitTrend, HabitTrendSession, ReportLevel, ReportPayload, StudyRecord } from "@/types";
 
 function findDeclinePeriod(records: StudyRecord[]) {
   const midpoint = Math.floor(records.length / 2);
@@ -80,6 +80,222 @@ function buildMockTrend(reportLevel: ReportLevel, records: StudyRecord[]) {
   };
 }
 
+function focusSegmentsFromRecords(records: StudyRecord[]) {
+  const sorted = [...records].sort(
+    (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+  );
+  const segments: number[] = [];
+  let currentSeconds = 0;
+
+  sorted.forEach((record, index) => {
+    const timestamp = new Date(record.timestamp).getTime();
+    const nextTimestamp =
+      index < sorted.length - 1 ? new Date(sorted[index + 1].timestamp).getTime() : NaN;
+    const expectedInterval = Math.min(
+      300,
+      Math.max(15, Number(record.current_frequency_seconds ?? 60))
+    );
+    const rawSeconds =
+      Number.isFinite(timestamp) && Number.isFinite(nextTimestamp)
+        ? (nextTimestamp - timestamp) / 1000
+        : expectedInterval;
+    const seconds = Math.max(
+      0,
+      Math.min(Number.isFinite(rawSeconds) ? rawSeconds : expectedInterval, Math.max(60, expectedInterval * 1.5))
+    );
+    const state = normalizeRecordState(record);
+
+    if (state.presence === "present" && state.learningState === "studying") {
+      currentSeconds += seconds;
+      return;
+    }
+
+    if (currentSeconds > 0) {
+      segments.push(currentSeconds);
+      currentSeconds = 0;
+    }
+  });
+
+  if (currentSeconds > 0) {
+    segments.push(currentSeconds);
+  }
+
+  return segments.map((seconds) => Number((seconds / 60).toFixed(1)));
+}
+
+function countInterruptions(records: StudyRecord[]) {
+  let count = 0;
+  let previousWasInterrupted = false;
+
+  records.forEach((record) => {
+    const state = normalizeRecordState(record);
+    const interrupted = !(state.presence === "present" && state.learningState === "studying");
+    if (interrupted && !previousWasInterrupted) {
+      count += 1;
+    }
+    previousWasInterrupted = interrupted;
+  });
+
+  return count;
+}
+
+function buildHabitTrendSession(params: {
+  sessionId: string;
+  startTime: string;
+  durationMinutes: number | null;
+  records: StudyRecord[];
+}): HabitTrendSession {
+  const stats = calculateStats(params.records, params.durationMinutes ?? undefined);
+  const segments = focusSegmentsFromRecords(params.records);
+  const averageFocusMinutes =
+    segments.length === 0
+      ? 0
+      : Number((segments.reduce((sum, minutes) => sum + minutes, 0) / segments.length).toFixed(1));
+
+  return {
+    sessionId: params.sessionId,
+    startTime: params.startTime,
+    durationMinutes: stats.totalMinutes,
+    averageFocusMinutes,
+    longestFocusMinutes: stats.longestFocusMinutes,
+    interruptionCount: countInterruptions(params.records),
+    reminderCount: stats.reminderCount,
+    reminderResponseRate: stats.reminderResponseRate,
+    dataCoverageRate: stats.dataCoverageRate
+  };
+}
+
+function average(values: number[]) {
+  const validValues = values.filter((value) => Number.isFinite(value));
+  if (validValues.length === 0) return 0;
+  return Number((validValues.reduce((sum, value) => sum + value, 0) / validValues.length).toFixed(1));
+}
+
+function buildHabitTrendSummary(params: {
+  sampleCount: number;
+  requiredSampleCount: number;
+  direction: HabitTrend["direction"];
+  currentAverageFocusMinutes: number;
+  previousAverageFocusMinutes: number | null;
+  averageReminderResponseRate: number;
+}) {
+  if (params.sampleCount < params.requiredSampleCount) {
+    return `趋势分析需要至少 ${params.requiredSampleCount} 次有效监督记录。当前已有 ${params.sampleCount} 次，继续积累后可观察平均连续学习时间是否提升、提醒后恢复是否变快。`;
+  }
+
+  if (params.direction === "improving") {
+    return `最近几次平均连续学习时间从 ${params.previousAverageFocusMinutes ?? 0} 分钟提升到 ${params.currentAverageFocusMinutes} 分钟，习惯培养有改善迹象。`;
+  }
+
+  if (params.direction === "declining") {
+    return `最近几次平均连续学习时间从 ${params.previousAverageFocusMinutes ?? 0} 分钟下降到 ${params.currentAverageFocusMinutes} 分钟，建议关注任务难度、学习环境和监督节奏。`;
+  }
+
+  return `最近几次平均连续学习时间基本稳定，提醒后恢复率约 ${params.averageReminderResponseRate}%。建议继续观察是否能逐步延长连续学习时间。`;
+}
+
+function buildHabitTrend(sessions: HabitTrendSession[]): HabitTrend {
+  const requiredSampleCount = 3;
+  const chronological = [...sessions].sort(
+    (a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime()
+  );
+  const latest = chronological[chronological.length - 1];
+  const recent = chronological.slice(-3);
+  const previous = chronological.slice(-6, -3);
+  const currentAverageFocusMinutes = average(recent.map((item) => item.averageFocusMinutes));
+  const previousAverageFocusMinutes =
+    previous.length > 0 ? average(previous.map((item) => item.averageFocusMinutes)) : null;
+  const averageReminderResponseRate = average(
+    recent.map((item) => item.reminderResponseRate)
+  );
+
+  let direction: HabitTrend["direction"] = "insufficient";
+  if (chronological.length >= requiredSampleCount) {
+    if (previousAverageFocusMinutes === null) {
+      const first = chronological[0]?.averageFocusMinutes ?? 0;
+      const last = latest?.averageFocusMinutes ?? 0;
+      direction = last >= first + 2 ? "improving" : last <= first - 2 ? "declining" : "stable";
+    } else {
+      direction =
+        currentAverageFocusMinutes >= previousAverageFocusMinutes + 2
+          ? "improving"
+          : currentAverageFocusMinutes <= previousAverageFocusMinutes - 2
+          ? "declining"
+          : "stable";
+    }
+  }
+
+  return {
+    sampleCount: chronological.length,
+    requiredSampleCount,
+    isEnoughData: chronological.length >= requiredSampleCount,
+    direction,
+    summary: buildHabitTrendSummary({
+      sampleCount: chronological.length,
+      requiredSampleCount,
+      direction,
+      currentAverageFocusMinutes,
+      previousAverageFocusMinutes,
+      averageReminderResponseRate
+    }),
+    currentAverageFocusMinutes,
+    previousAverageFocusMinutes,
+    currentLongestFocusMinutes: latest?.longestFocusMinutes ?? 0,
+    averageReminderResponseRate,
+    sessions: chronological.slice(-7)
+  };
+}
+
+async function loadHabitTrend(accessCodeId: string): Promise<HabitTrend | null> {
+  if (!supabaseAdmin) return null;
+
+  const { data: sessions, error: sessionsError } = await supabaseAdmin
+    .from("sessions")
+    .select("id, start_time, duration_minutes")
+    .eq("access_code_id", accessCodeId)
+    .in("status", ["completed", "expired"])
+    .order("end_time", { ascending: false })
+    .limit(7);
+
+  if (sessionsError || !sessions || sessions.length === 0) {
+    return null;
+  }
+
+  const sessionIds = sessions.map((item) => item.id);
+  const { data: records, error: recordsError } = await supabaseAdmin
+    .from("records")
+    .select("*")
+    .in("session_id", sessionIds)
+    .order("timestamp", { ascending: true });
+
+  if (recordsError) {
+    return null;
+  }
+
+  const recordsBySession = ((records ?? []) as StudyRecord[]).reduce<Record<string, StudyRecord[]>>(
+    (acc, record) => {
+      if (!record.session_id) return acc;
+      acc[record.session_id] ??= [];
+      acc[record.session_id].push(record);
+      return acc;
+    },
+    {}
+  );
+
+  const trendSessions = sessions
+    .map((session) =>
+      buildHabitTrendSession({
+        sessionId: session.id,
+        startTime: session.start_time,
+        durationMinutes: session.duration_minutes,
+        records: recordsBySession[session.id] ?? []
+      })
+    )
+    .filter((item) => item.durationMinutes >= 3 && item.dataCoverageRate > 0);
+
+  return buildHabitTrend(trendSessions);
+}
+
 async function generateReport(
   request: NextRequest,
   params: Partial<ReportPayload>,
@@ -154,6 +370,7 @@ async function generateReport(
     ? "当前为测试数据，建议先重点测试摄像头角度、监督流程和报告展示效果。"
     : buildParentAdvice(stats);
   const trend = buildMockTrend(reportLevel, records);
+  const habitTrend = await loadHabitTrend(session.access_code_id);
 
   const summary = [
     records.length >= 5
@@ -168,6 +385,7 @@ async function generateReport(
     conclusion,
     parentAdvice,
     trend,
+    habitTrend,
     stats,
     records,
     reportLevel,

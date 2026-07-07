@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { normalizeRecordState } from "@/lib/stats";
-import { type ReportLevel, type StudyRecord, type StudyStats } from "@/types";
+import { type HabitTrend, type ReportLevel, type StudyRecord, type StudyStats } from "@/types";
 
 type Trend = Record<string, string> | null;
 type HighlightTone = "brand" | "warn" | "alert" | "neutral";
@@ -13,7 +13,8 @@ export function ReportCard({
   parentAdvice,
   records,
   reportLevel,
-  trend
+  trend,
+  habitTrend
 }: {
   stats: StudyStats;
   conclusion: string;
@@ -21,6 +22,7 @@ export function ReportCard({
   records: StudyRecord[];
   reportLevel: ReportLevel;
   trend: Trend;
+  habitTrend?: HabitTrend | null;
 }) {
   const [expanded, setExpanded] = useState(false);
   const isMockMode =
@@ -100,6 +102,39 @@ export function ReportCard({
       </div>
 
       <div className="rounded-md border border-line bg-white p-5">
+        <h2 className="text-lg font-semibold">习惯养成趋势</h2>
+        <p className="mt-3 text-sm leading-6 text-muted">
+          {habitTrend?.summary ??
+            "趋势分析需要积累足够的数据样本。继续完成多次有效监督后，可观察平均连续学习时间是否提升。"}
+        </p>
+        <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-4">
+          {[
+            ["趋势样本", `${habitTrend?.sampleCount ?? 0}/${habitTrend?.requiredSampleCount ?? 3}次`],
+            ["平均连续学习", habitTrend?.isEnoughData ? `${habitTrend.currentAverageFocusMinutes}分钟` : "样本不足"],
+            ["本次最长连续", `${habitTrend?.currentLongestFocusMinutes ?? stats.longestFocusMinutes}分钟`],
+            ["提醒后恢复率", habitTrend?.isEnoughData ? `${habitTrend.averageReminderResponseRate}%` : "样本不足"]
+          ].map(([label, value]) => (
+            <div key={label} className="rounded-md bg-panel p-3">
+              <div className="text-sm text-muted">{label}</div>
+              <div className="mt-1 text-xl font-semibold">{value}</div>
+            </div>
+          ))}
+        </div>
+        {habitTrend?.sessions && habitTrend.sessions.length > 0 && (
+          <div className="mt-4 space-y-2">
+            {habitTrend.sessions.slice(-5).map((item, index) => (
+              <div key={item.sessionId} className="rounded-md bg-panel p-3 text-sm leading-6">
+                <div className="font-medium">第 {index + 1} 次：{formatDate(item.startTime)}</div>
+                <div className="text-muted">
+                  平均连续学习 {item.averageFocusMinutes} 分钟 / 最长 {item.longestFocusMinutes} 分钟 / 中断 {item.interruptionCount} 次
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="rounded-md border border-line bg-white p-5">
         <h2 className="text-lg font-semibold">本次关键节点</h2>
         <div className="mt-4 space-y-3">
           {keyEvents.length === 0 ? (
@@ -132,7 +167,7 @@ export function ReportCard({
       <div className="rounded-md border border-line bg-white p-5">
         <h2 className="text-lg font-semibold">趋势分析</h2>
         <div className="mt-3 rounded-md bg-amber-50 p-4 text-sm leading-6 text-warn">
-          {buildTrendMessage(reportLevel, trend, records, insufficientData)}
+          {buildTrendMessage(reportLevel, trend, records, insufficientData, habitTrend)}
         </div>
       </div>
 
@@ -448,21 +483,34 @@ function buildTrendMessage(
   reportLevel: ReportLevel,
   trend: Trend,
   records: StudyRecord[],
-  insufficientData: boolean
+  insufficientData: boolean,
+  habitTrend?: HabitTrend | null
 ) {
+  if (!habitTrend || !habitTrend.isEnoughData) {
+    return "趋势分析需要积累足够的数据样本。建议至少完成3次有效监督后，再观察平均连续学习时间是否提升、提醒后恢复是否变快、中断次数是否减少。";
+  }
+
+  if (habitTrend.direction === "improving") {
+    return "最近几次监督显示，平均连续学习时间有提升迹象。当前更适合继续保持监督节奏，帮助孩子把外部提醒逐步变成学习习惯。";
+  }
+
+  if (habitTrend.direction === "declining") {
+    return "最近几次监督显示，平均连续学习时间有所下降。建议先排查任务难度、学习环境和拍摄稳定性，再缩短单次学习目标。";
+  }
+
   if (insufficientData || records.length < 20) {
-    return "趋势分析需要积累足够的数据样本。建议至少完成多次有效监督，或单次监督达到20条以上识别记录后，再查看趋势变化。";
+    return "本次单次数据仍偏少，但历史样本已可开始观察习惯趋势。建议继续稳定使用，重点看连续学习时间是否逐渐变长。";
   }
 
   if (reportLevel === "basic") {
-    return "当前套餐展示基础报告。趋势分析需要积累多次监督数据后再开放参考。";
+    return "最近几次监督表现基本稳定。当前阶段建议重点观察平均连续学习时间，而不是单次离座或短暂发呆。";
   }
 
   if (!trend) {
     return "当前历史样本不足，暂不生成趋势判断。";
   }
 
-  return "已有一定识别记录，但长期趋势仍需要更多天的监督样本支撑。当前阶段建议先关注本次监督的关键节点和下次建议。";
+  return "已有一定识别记录，但长期趋势仍需要更多天的监督样本支撑。当前阶段建议关注平均连续学习时间和提醒后恢复率是否持续改善。";
 }
 
 function displayStateText(record: StudyRecord) {
@@ -476,5 +524,12 @@ function formatMinute(value: string) {
   return new Date(value).toLocaleTimeString("zh-CN", {
     hour: "2-digit",
     minute: "2-digit"
+  });
+}
+
+function formatDate(value: string) {
+  return new Date(value).toLocaleDateString("zh-CN", {
+    month: "2-digit",
+    day: "2-digit"
   });
 }
