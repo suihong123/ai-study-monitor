@@ -100,6 +100,7 @@ type AudioTestStep = {
   detail?: string;
 };
 type BeepPattern = "single" | "triple";
+type CameraFacing = "environment" | "user";
 
 function createInlineBeepWavUrl() {
   const sampleRate = 44100;
@@ -178,6 +179,7 @@ export default function SupervisePage() {
   const [learningState, setLearningState] = useState<LearningState>("uncertain");
   const [records, setRecords] = useState<StudyRecord[]>([]);
   const [cameraError, setCameraError] = useState("");
+  const [cameraFacing, setCameraFacing] = useState<CameraFacing>("environment");
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [analyzing, setAnalyzing] = useState(false);
   const [currentIntervalSeconds, setCurrentIntervalSeconds] = useState(60);
@@ -251,6 +253,7 @@ export default function SupervisePage() {
   const cameraActive = Boolean(
     streamRef.current?.getVideoTracks().some((track) => track.readyState === "live")
   );
+  const cameraFacingLabel = cameraFacing === "environment" ? "后置摄像头" : "前置摄像头";
   const supervisionHealth = !pageActive
     ? "监督已暂停"
     : cameraError
@@ -967,6 +970,18 @@ export default function SupervisePage() {
     }
   }, [current]);
 
+  const switchCameraFacing = useCallback(() => {
+    setCameraError("");
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+    setCameraFacing((currentFacing) =>
+      currentFacing === "environment" ? "user" : "environment"
+    );
+  }, []);
+
   const releaseWakeLock = useCallback(async () => {
     const wakeLock = wakeLockRef.current;
     wakeLockRef.current = null;
@@ -1128,7 +1143,7 @@ export default function SupervisePage() {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
           video: {
-            facingMode: "environment",
+            facingMode: cameraFacing,
             width: { ideal: 1280 },
             height: { ideal: 720 }
           },
@@ -1144,7 +1159,7 @@ export default function SupervisePage() {
           window.setTimeout(() => void analyzeRef.current(), delay)
         );
       } catch {
-        setCameraError("无法打开摄像头，请确认浏览器权限和HTTPS访问。");
+        setCameraError("无法打开摄像头，请确认浏览器权限和HTTPS访问，或尝试切换前置/后置摄像头。");
         void fetch("/api/client-error", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1153,7 +1168,7 @@ export default function SupervisePage() {
             sessionId: activeSupervision.session.id,
             sessionToken: activeSupervision.session.session_token,
             errorType: "摄像头权限失败",
-            errorMessage: "无法打开摄像头，请确认浏览器权限和HTTPS访问。"
+            errorMessage: `无法打开${cameraFacing === "environment" ? "后置" : "前置"}摄像头，请确认浏览器权限和HTTPS访问。`
           })
         });
       }
@@ -1166,7 +1181,7 @@ export default function SupervisePage() {
       calibrationAnalyzeTimersRef.current = [];
       streamRef.current?.getTracks().forEach((track) => track.stop());
     };
-  }, [current, needsRecoveryDecision, placementConfirmed]);
+  }, [cameraFacing, current, needsRecoveryDecision, placementConfirmed]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -1378,6 +1393,19 @@ export default function SupervisePage() {
       <div className="grid gap-4 lg:grid-cols-[1fr_320px]">
         <section>
           <CameraPreview ref={videoRef} />
+          <div className="mt-3 flex flex-col gap-2 rounded-md border border-line bg-white p-3 text-sm sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <span className="text-muted">当前摄像头：</span>
+              <span className="font-medium text-ink">{cameraFacingLabel}</span>
+            </div>
+            <button
+              type="button"
+              onClick={switchCameraFacing}
+              className="h-10 rounded-md border border-line px-3 font-medium text-ink"
+            >
+              切换到{cameraFacing === "environment" ? "前置摄像头" : "后置摄像头"}
+            </button>
+          </div>
           {cameraError && (
             <p className="mt-3 rounded-md border border-alert bg-red-50 p-3 text-sm text-alert">
               {cameraError}
