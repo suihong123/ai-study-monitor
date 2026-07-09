@@ -38,6 +38,7 @@ type AdminLog = {
   access_code_id?: string | null;
   error_type?: string;
   error_message?: string;
+  stack?: string | null;
   event_type?: string;
   message?: string;
   model_type?: string;
@@ -849,6 +850,14 @@ function LogSection({ title, rows }: { title: string; rows: AdminLog[] }) {
                 <div className="mt-1 break-all text-xs text-muted">
                   {row.ip ?? "-"} / {row.user_agent ?? "-"}
                 </div>
+              )}
+              {row.stack && (
+                <details className="mt-2 text-xs text-muted">
+                  <summary className="cursor-pointer font-medium text-ink">查看诊断详情</summary>
+                  <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded-md bg-white p-2">
+                    {row.stack}
+                  </pre>
+                </details>
               )}
             </div>
           ))

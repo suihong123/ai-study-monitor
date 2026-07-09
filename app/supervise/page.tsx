@@ -179,6 +179,7 @@ export default function SupervisePage() {
   const [learningState, setLearningState] = useState<LearningState>("uncertain");
   const [records, setRecords] = useState<StudyRecord[]>([]);
   const [cameraError, setCameraError] = useState("");
+  const [cameraErrorType, setCameraErrorType] = useState("");
   const [cameraFacing, setCameraFacing] = useState<CameraFacing>("environment");
   const [cameraRetryKey, setCameraRetryKey] = useState(0);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
@@ -973,6 +974,7 @@ export default function SupervisePage() {
 
   const switchCameraFacing = useCallback(() => {
     setCameraError("");
+    setCameraErrorType("");
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
     if (videoRef.current) {
@@ -985,6 +987,7 @@ export default function SupervisePage() {
 
   const retryCamera = useCallback(() => {
     setCameraError("");
+    setCameraErrorType("");
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
     if (videoRef.current) {
@@ -1171,8 +1174,9 @@ export default function SupervisePage() {
           window.setTimeout(() => void analyzeRef.current(), delay)
         );
       } catch (error) {
-        const cameraErrorMessage = cameraPermissionHelpMessage(error, cameraFacing);
-        setCameraError(cameraErrorMessage);
+        const cameraDiagnosis = buildCameraPermissionDiagnosis(error, cameraFacing);
+        setCameraError(cameraDiagnosis.message);
+        setCameraErrorType(cameraDiagnosis.issueType);
         void fetch("/api/client-error", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1180,8 +1184,9 @@ export default function SupervisePage() {
             accessCodeId: activeSupervision.accessCode.id,
             sessionId: activeSupervision.session.id,
             sessionToken: activeSupervision.session.session_token,
-            errorType: "摄像头权限失败",
-            errorMessage: cameraErrorMessage
+            errorType: `摄像头权限失败-${cameraDiagnosis.issueType}`,
+            errorMessage: cameraDiagnosis.message,
+            stack: JSON.stringify(cameraDiagnosis, null, 2)
           })
         });
       }
@@ -1423,10 +1428,21 @@ export default function SupervisePage() {
           {cameraError && (
             <div className="mt-3 rounded-md border border-alert bg-red-50 p-3 text-sm leading-6 text-alert">
               <div className="font-semibold">相机授权失败</div>
+              {cameraErrorType && (
+                <div className="mt-1 rounded-md bg-white/70 px-2 py-1 text-xs font-medium">
+                  问题类型：{cameraErrorType}
+                </div>
+              )}
               <div className="mt-1">{cameraError}</div>
               <div className="mt-2 text-xs leading-5 text-alert/90">
-                安卓手机如果提示“关闭气泡或叠加层”，请先关闭微信气泡、录屏悬浮按钮、手机管家悬浮球、翻译悬浮窗、小窗模式等，再重新打开相机。
+                安卓手机如果提示“关闭气泡或叠加层”，通常是系统安全限制，不一定是用户主动设置。请按下面路径检查：
               </div>
+              <ul className="mt-2 list-inside list-disc text-xs leading-5 text-alert/90">
+                <li>设置 → 应用 → 特殊应用权限 → 显示在其他应用上层 / 悬浮窗</li>
+                <li>关闭微信/QQ聊天气泡、录屏悬浮按钮、手机管家悬浮球、翻译悬浮窗、小窗模式</li>
+                <li>设置 → 应用 → 浏览器 → 权限 → 相机 → 允许</li>
+                <li>如果是系统自带悬浮球，可在“设置 → 辅助功能”里临时关闭</li>
+              </ul>
               <div className="mt-3 flex flex-col gap-2 sm:flex-row">
                 <button
                   type="button"
@@ -1442,9 +1458,16 @@ export default function SupervisePage() {
                 >
                   切换到{cameraFacing === "environment" ? "前置摄像头" : "后置摄像头"}
                 </button>
+                <button
+                  type="button"
+                  onClick={() => void navigator.clipboard?.writeText(window.location.href)}
+                  className="h-10 rounded-md border border-alert px-3 font-medium text-alert"
+                >
+                  复制网址
+                </button>
               </div>
               <div className="mt-2 text-xs leading-5 text-alert/90">
-                如果 Edge 仍无法授权，建议用 Chrome 浏览器打开同一网址测试。
+                如果 Edge 仍无法授权，建议复制网址后用 Chrome 浏览器打开测试。
               </div>
             </div>
           )}
@@ -1756,23 +1779,59 @@ function applyPlanLimit(desiredInterval: number, accessCode: AccessCode) {
   return Math.max(desiredInterval, accessCode.min_interval_seconds);
 }
 
-function cameraPermissionHelpMessage(error: unknown, cameraFacing: CameraFacing) {
+function buildCameraPermissionDiagnosis(error: unknown, cameraFacing: CameraFacing) {
   const cameraLabel = cameraFacing === "environment" ? "后置摄像头" : "前置摄像头";
   const errorName = error instanceof DOMException ? error.name : "";
+  const errorMessage = error instanceof Error ? error.message : String(error ?? "");
+  const userAgent = typeof navigator === "undefined" ? "" : navigator.userAgent;
+  const isAndroid = /Android/i.test(userAgent);
+  const isEdge = /EdgA|Edge/i.test(userAgent);
+  const base = {
+    cameraFacing,
+    cameraLabel,
+    errorName,
+    errorMessage,
+    userAgent,
+    platform: typeof navigator === "undefined" ? "" : navigator.platform,
+    vendor: typeof navigator === "undefined" ? "" : navigator.vendor,
+    isAndroid,
+    isEdge,
+    pageUrl: typeof window === "undefined" ? "" : window.location.href,
+    occurredAt: new Date().toISOString()
+  };
 
   if (errorName === "NotAllowedError" || errorName === "SecurityError") {
-    return `无法授权${cameraLabel}。请检查浏览器相机权限；安卓手机如出现气泡或叠加层提示，请关闭其他应用悬浮窗后点击“重新打开相机”。`;
+    const issueType = isAndroid
+      ? "疑似安卓悬浮窗或系统权限拦截"
+      : "浏览器相机权限未授权";
+    return {
+      ...base,
+      issueType,
+      message: `无法授权${cameraLabel}。${isAndroid ? "安卓系统可能检测到气泡、悬浮窗或小窗模式，导致相机授权被拦截。" : "请检查浏览器相机权限。"}`
+    };
   }
 
   if (errorName === "NotFoundError" || errorName === "OverconstrainedError") {
-    return `未找到可用的${cameraLabel}。请尝试切换前置/后置摄像头，或确认没有其他应用正在占用相机。`;
+    return {
+      ...base,
+      issueType: "未找到指定摄像头",
+      message: `未找到可用的${cameraLabel}。请尝试切换前置/后置摄像头，或确认没有其他应用正在占用相机。`
+    };
   }
 
   if (errorName === "NotReadableError") {
-    return `暂时无法读取${cameraLabel}。可能有其他应用正在使用相机，请关闭后重试。`;
+    return {
+      ...base,
+      issueType: "相机被占用或系统读取失败",
+      message: `暂时无法读取${cameraLabel}。可能有其他应用正在使用相机，请关闭后重试。`
+    };
   }
 
-  return `无法打开${cameraLabel}。请确认浏览器相机权限和 HTTPS 访问，或关闭悬浮窗后重试。`;
+  return {
+    ...base,
+    issueType: "未知相机打开失败",
+    message: `无法打开${cameraLabel}。请确认浏览器相机权限和 HTTPS 访问，或关闭悬浮窗后重试。`
+  };
 }
 
 function slowerInterval(currentDefaultInterval: number) {
