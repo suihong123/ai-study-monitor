@@ -1427,22 +1427,15 @@ export default function SupervisePage() {
           </div>
           {cameraError && (
             <div className="mt-3 rounded-md border border-alert bg-red-50 p-3 text-sm leading-6 text-alert">
-              <div className="font-semibold">相机授权失败</div>
-              {cameraErrorType && (
-                <div className="mt-1 rounded-md bg-white/70 px-2 py-1 text-xs font-medium">
-                  问题类型：{cameraErrorType}
+              <div className="font-semibold">相机无法打开</div>
+              <div className="mt-1">
+                请先点击“重新打开相机”。如果仍失败，建议复制链接，用 Chrome 或手机自带浏览器打开。
+              </div>
+              {cameraErrorType.includes("安卓") && (
+                <div className="mt-2 rounded-md bg-white/70 p-2 text-xs leading-5 text-alert/90">
+                  安卓手机如提示“悬浮窗/覆盖层”，请先关闭微信浮窗、录屏按钮或系统悬浮球后重试。
                 </div>
               )}
-              <div className="mt-1">{cameraError}</div>
-              <div className="mt-2 text-xs leading-5 text-alert/90">
-                安卓手机如果提示“关闭气泡或叠加层”，通常是系统安全限制，不一定是用户主动设置。请按下面路径检查：
-              </div>
-              <ul className="mt-2 list-inside list-disc text-xs leading-5 text-alert/90">
-                <li>设置 → 应用 → 特殊应用权限 → 显示在其他应用上层 / 悬浮窗</li>
-                <li>关闭微信/QQ聊天气泡、录屏悬浮按钮、手机管家悬浮球、翻译悬浮窗、小窗模式</li>
-                <li>设置 → 应用 → 浏览器 → 权限 → 相机 → 允许</li>
-                <li>如果是系统自带悬浮球，可在“设置 → 辅助功能”里临时关闭</li>
-              </ul>
               <div className="mt-3 flex flex-col gap-2 sm:flex-row">
                 <button
                   type="button"
@@ -1463,12 +1456,10 @@ export default function SupervisePage() {
                   onClick={() => void navigator.clipboard?.writeText(window.location.href)}
                   className="h-10 rounded-md border border-alert px-3 font-medium text-alert"
                 >
-                  复制网址
+                  复制链接，换浏览器打开
                 </button>
               </div>
-              <div className="mt-2 text-xs leading-5 text-alert/90">
-                如果 Edge 仍无法授权，建议复制网址后用 Chrome 浏览器打开测试。
-              </div>
+              <div className="mt-2 text-xs leading-5 text-alert/80">仍无法解决时，可临时用电脑浏览器测试。</div>
             </div>
           )}
           {shouldShowAngleWarning && (
