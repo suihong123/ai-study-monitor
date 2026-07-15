@@ -61,6 +61,8 @@ const reminderAudioSources: Record<ReminderType, { first: string; repeat: string
 };
 
 const reminderTestAudioSource = "/audio/reminder-test.wav";
+const supervisionStartAudioSource = "/audio/reminder-start.wav";
+const supervisionEndAudioSource = "/audio/reminder-end.wav";
 
 const normalReminderCooldownMs = 3 * 60 * 1000;
 const stableReminderCooldownMs = 5 * 60 * 1000;
@@ -507,6 +509,35 @@ export default function SupervisePage() {
       return false;
     },
     [playBeep, playInlineWav, playLocalReminderAudio, speak]
+  );
+
+  const playSupervisionCue = useCallback(
+    async (source: string, label: string) => {
+      try {
+        const localAudioStarted = await playLocalReminderAudio(source);
+        if (localAudioStarted) {
+          setLastAudioResult(`${label}已开始播放`);
+          return true;
+        }
+      } catch (error) {
+        setLastAudioResult(`${label}播放失败，尝试蜂鸣兜底`);
+        console.error(`[提醒声音] ${label}播放失败`, error);
+      }
+
+      try {
+        const beepPlayed = await playBeep("single");
+        if (beepPlayed) {
+          setLastAudioResult(`${label}本地语音未启动，蜂鸣兜底成功`);
+          return true;
+        }
+      } catch (error) {
+        console.error(`[提醒声音] ${label}蜂鸣兜底失败`, error);
+      }
+
+      setLastAudioResult(`${label}未能播放，请检查媒体音量`);
+      return false;
+    },
+    [playBeep, playLocalReminderAudio]
   );
 
   const testReminderSound = useCallback(async () => {
@@ -1058,6 +1089,7 @@ export default function SupervisePage() {
       window.sessionStorage.removeItem("current-supervision");
       void releaseWakeLock();
       streamRef.current?.getTracks().forEach((track) => track.stop());
+      await playSupervisionCue(supervisionEndAudioSource, "监督结束提示音");
 
       if (!reportToken) {
         const fallbackStats = calculateStats(finalRecords, durationMinutes);
@@ -1116,7 +1148,7 @@ export default function SupervisePage() {
       finishingRef.current = false;
       setCameraError(error instanceof Error ? error.message : "结束监督失败，请稍后重试。");
     }
-  }, [current, releaseWakeLock, router]);
+  }, [current, playSupervisionCue, releaseWakeLock, router]);
 
   useEffect(() => {
     const raw = window.sessionStorage.getItem("current-supervision");
@@ -1706,10 +1738,11 @@ export default function SupervisePage() {
                 <button
                   type="button"
                   onClick={() => {
-                    void unlockLocalReminderAudio();
-                    void unlockReminderAudio();
                     window.sessionStorage.setItem(`placement-confirmed-${current.session.id}`, "true");
                     setPlacementConfirmed(true);
+                    void unlockLocalReminderAudio();
+                    void unlockReminderAudio();
+                    void playSupervisionCue(supervisionStartAudioSource, "监督开始提示音");
                   }}
                   className="h-11 rounded-md bg-brand px-4 font-semibold text-white sm:flex-1"
                 >
