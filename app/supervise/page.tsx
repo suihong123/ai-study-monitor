@@ -201,10 +201,6 @@ export default function SupervisePage() {
   const [completedReportUrl, setCompletedReportUrl] = useState("");
 
   const elapsedMinutes = Math.floor(elapsedSeconds / 60);
-  const todayRemainingMinutes = Math.max(
-    0,
-    (current?.todayRemainingMinutes ?? 0) - elapsedMinutes
-  );
   const totalRemainingMinutes = Math.max(
     0,
     (current?.totalRemainingMinutes ?? 0) - elapsedMinutes
@@ -1303,10 +1299,10 @@ export default function SupervisePage() {
   }, [applyInterval, current, defaultIntervalForNow, elapsedMinutes]);
 
   useEffect(() => {
-    if (current && (todayRemainingMinutes <= 0 || totalRemainingMinutes <= 0)) {
+    if (current && totalRemainingMinutes <= 0) {
       void finish();
     }
-  }, [current, finish, todayRemainingMinutes, totalRemainingMinutes]);
+  }, [current, finish, totalRemainingMinutes]);
 
   if (completedReport) {
     const isMockMode =
@@ -1558,7 +1554,6 @@ export default function SupervisePage() {
             </div>
           </div>
           <Timer label="本次监督总时长" minutes={elapsedMinutes} />
-          <Timer label="今日剩余额度" minutes={todayRemainingMinutes} />
           <Timer label="账号总剩余额度" minutes={totalRemainingMinutes} />
           <div className="rounded-md border border-line bg-white p-4">
             <div className="text-sm text-muted">当前专注率</div>

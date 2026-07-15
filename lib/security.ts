@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import { canUseAccessCode, statusMessages } from "@/lib/access-code-status";
-import { getTodayKey } from "@/lib/plans";
 import { supabaseAdmin } from "@/lib/supabase/server";
 import type { AccessCode, AccessCodeStatus, StudySession } from "@/types";
 
@@ -246,18 +245,14 @@ export async function validateSessionRequest(
     };
   }
 
-  const today = getTodayKey();
-  const usedToday =
-    accessCode.last_reset_date === today ? accessCode.used_minutes_today : 0;
   const totalRemaining = accessCode.total_minutes - accessCode.used_minutes;
-  const todayRemaining = accessCode.daily_minutes - usedToday;
 
   const status = accessCode.status as AccessCodeStatus;
   const expiredByDate =
     accessCode.expires_at && new Date(accessCode.expires_at).getTime() < Date.now();
-  if (!canUseAccessCode(status) || expiredByDate || totalRemaining <= 0 || todayRemaining <= 0) {
+  if (!canUseAccessCode(status) || expiredByDate || totalRemaining <= 0) {
     const message =
-      totalRemaining <= 0 || todayRemaining <= 0
+      totalRemaining <= 0
         ? "额度不足仍继续调用"
         : expiredByDate
         ? statusMessages.expired

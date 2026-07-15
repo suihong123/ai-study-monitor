@@ -12,38 +12,38 @@ export const defaultPlanConfigs: Record<PlanType, Omit<PlanConfig, "id" | "creat
   },
   basic_monthly: {
     plan_type: "basic_monthly",
-    name: "基础月卡",
-    daily_minutes: 120,
+    name: "月卡",
+    daily_minutes: 3600,
     base_interval_seconds: 90,
     min_interval_seconds: 60,
     report_level: "basic",
-    price_suggest: "适合每天2小时作业监督"
+    price_suggest: "共60小时监督时长"
   },
   standard_monthly: {
     plan_type: "standard_monthly",
-    name: "标准月卡",
-    daily_minutes: 180,
+    name: "季卡",
+    daily_minutes: 10800,
     base_interval_seconds: 60,
     min_interval_seconds: 30,
     report_level: "standard",
-    price_suggest: "适合每天3小时作业监督"
+    price_suggest: "共180小时监督时长"
   },
   pro_monthly: {
     plan_type: "pro_monthly",
-    name: "强化月卡",
-    daily_minutes: 240,
+    name: "年卡",
+    daily_minutes: 43200,
     base_interval_seconds: 30,
     min_interval_seconds: 15,
     report_level: "advanced",
-    price_suggest: "适合每天4小时高强度监督"
+    price_suggest: "共720小时监督时长"
   }
 };
 
 export const planTotalMinutes: Record<PlanType, number> = {
   trial: 120,
   basic_monthly: 3600,
-  standard_monthly: 5400,
-  pro_monthly: 7200
+  standard_monthly: 10800,
+  pro_monthly: 43200
 };
 
 export function getTodayKey() {

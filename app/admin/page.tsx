@@ -121,9 +121,9 @@ const planLabels: Record<PlanType, string> = {
 
 const planDescriptions: Record<PlanType, string[]> = {
   trial: ["总额度120分钟", "适合首次体验"],
-  basic_monthly: ["每日180分钟", "总额度5400分钟"],
-  standard_monthly: ["每日180分钟", "总额度16200分钟"],
-  pro_monthly: ["每日180分钟", "总额度65700分钟"]
+  basic_monthly: ["总额度3600分钟", "共60小时监督时长"],
+  standard_monthly: ["总额度10800分钟", "共180小时监督时长"],
+  pro_monthly: ["总额度43200分钟", "共720小时监督时长"]
 };
 
 const dashboardLabels: Record<string, string> = {
@@ -608,7 +608,6 @@ export default function AdminPage() {
                         <th className="p-3">访问码</th>
                         <th className="p-3">状态</th>
                         <th className="p-3">套餐</th>
-                        <th className="p-3">今日额度</th>
                         <th className="p-3">总额度</th>
                         <th className="p-3">风险</th>
                         <th className="p-3">设备</th>
@@ -648,9 +647,6 @@ export default function AdminPage() {
                               </td>
                               <td className="p-3">{planLabels[item.plan_type]}</td>
                               <td className="p-3">
-                                {item.used_minutes_today} / {Math.max(item.daily_minutes - item.used_minutes_today, 0)}分钟
-                              </td>
-                              <td className="p-3">
                                 {item.used_minutes} / {Math.max(item.total_minutes - item.used_minutes, 0)}分钟
                               </td>
                               <td className="p-3">{riskCount > 0 ? `${riskCount}条` : "无"}</td>
@@ -678,9 +674,6 @@ export default function AdminPage() {
                                       <button onClick={() => void updateCode(item.id, { action: "unbind", reason: "后台解绑设备" })} className="rounded-md border border-line px-3 py-2 text-left">
                                         解绑设备
                                       </button>
-                                      <button onClick={() => void updateCode(item.id, { action: "reset-today", reason: "后台重置今日额度" })} className="rounded-md border border-line px-3 py-2 text-left">
-                                        重置今日额度
-                                      </button>
                                       <button onClick={() => updateStatus(item, "watch")} className="rounded-md border border-warn px-3 py-2 text-left text-warn">
                                         设置观察
                                       </button>
@@ -705,9 +698,6 @@ export default function AdminPage() {
                                       <button onClick={() => adjustQuota(item, "set-total")} className="rounded-md border border-line px-3 py-2 text-left">
                                         改总额度
                                       </button>
-                                      <button onClick={() => adjustQuota(item, "set-daily")} className="rounded-md border border-line px-3 py-2 text-left">
-                                        改日额度
-                                      </button>
                                       <button onClick={() => changePlan(item)} className="rounded-md border border-line px-3 py-2 text-left">
                                         改套餐
                                       </button>
@@ -721,10 +711,9 @@ export default function AdminPage() {
                             </tr>
                             {isExpanded && (
                               <tr className="border-t border-line bg-panel/60">
-                                <td colSpan={9} className="p-4">
+                                <td colSpan={8} className="p-4">
                                   <div className="grid gap-3 md:grid-cols-3">
                                     <InfoItem label="设备ID" value={item.device_id ?? "未绑定"} />
-                                    <InfoItem label="今日额度" value={`已用${item.used_minutes_today} / 剩余${Math.max(item.daily_minutes - item.used_minutes_today, 0)}分钟`} />
                                     <InfoItem label="总额度" value={`已用${item.used_minutes} / 剩余${Math.max(item.total_minutes - item.used_minutes, 0)}分钟`} />
                                     <InfoItem label="基础识别频率" value={`${item.base_interval_seconds}秒`} />
                                     <InfoItem label="最快识别频率" value={`${item.min_interval_seconds}秒`} />

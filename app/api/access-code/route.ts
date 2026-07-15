@@ -259,16 +259,6 @@ async function handleValidateCode(request: NextRequest, code: string, deviceId: 
       { status: 403 }
     );
   }
-  if (todayRemainingMinutes <= 0) {
-    await logSuspicious({
-      accessCodeId: data.id,
-      ip,
-      userAgent,
-      eventType: "额度不足仍继续调用",
-      message: "今日额度不足"
-    });
-    return NextResponse.json({ error: "今日额度不足" }, { status: 403 });
-  }
 
   const updates: Record<string, unknown> = { ...resetValues };
   if (!data.device_id) updates.device_id = deviceId;

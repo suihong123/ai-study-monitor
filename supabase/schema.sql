@@ -23,10 +23,10 @@ insert into plan_configs (
   report_level,
   price_suggest
 ) values
-  ('trial', '体验版', 120, 90, 60, 'basic', '体验'),
-  ('basic_monthly', '基础月卡', 120, 90, 60, 'basic', '适合每天2小时作业监督'),
-  ('standard_monthly', '标准月卡', 180, 60, 30, 'standard', '适合每天3小时作业监督'),
-  ('pro_monthly', '强化月卡', 240, 30, 15, 'advanced', '适合每天4小时高强度监督')
+  ('trial', '2小时体验版', 120, 90, 60, 'basic', '共2小时监督时长'),
+  ('basic_monthly', '月卡', 3600, 90, 60, 'basic', '共60小时监督时长'),
+  ('standard_monthly', '季卡', 10800, 60, 30, 'standard', '共180小时监督时长'),
+  ('pro_monthly', '年卡', 43200, 30, 15, 'advanced', '共720小时监督时长')
 on conflict (plan_type) do update set
   name = excluded.name,
   daily_minutes = excluded.daily_minutes,
