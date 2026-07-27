@@ -175,7 +175,7 @@ export default function HomePage() {
 
         {reportHistory.length > 0 && (
           <section className="mt-4 rounded-md border border-line bg-white p-4">
-            <div className="text-sm font-semibold text-ink">最近报告</div>
+            <div className="text-sm font-semibold text-ink">近期趋势报告</div>
             <div className="mt-3 grid gap-2">
               {reportHistory.slice(0, 3).map((item) => (
                 <button
@@ -185,7 +185,7 @@ export default function HomePage() {
                   className="flex items-center justify-between rounded-md bg-panel px-3 py-3 text-left text-sm"
                 >
                   <span>{formatReportDate(item.startTime)}</span>
-                  <span className="font-medium text-brand">查看报告</span>
+                  <span className="font-medium text-brand">查看趋势</span>
                 </button>
               ))}
             </div>

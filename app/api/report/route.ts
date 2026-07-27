@@ -1,5 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { estimateReportCost } from "@/lib/costs";
+import {
+  hasEligibleTrendRecords,
+  isEligibleTrendSession
+} from "@/lib/report-trend";
 import { checkRateLimit, logAiCall, logError } from "@/lib/security";
 import { calculateStats, normalizeRecordState } from "@/lib/stats";
 import { supabaseAdmin } from "@/lib/supabase/server";
@@ -164,9 +168,10 @@ function buildHabitTrend(sessions: HabitTrendSession[]): HabitTrend {
   const chronological = [...sessions].sort(
     (a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime()
   );
-  const latest = chronological[chronological.length - 1];
-  const recent = chronological.slice(-3);
-  const previous = chronological.slice(-6, -3);
+  const recentWindow = chronological.slice(-7);
+  const latest = recentWindow[recentWindow.length - 1];
+  const recent = recentWindow.slice(-3);
+  const previous = recentWindow.slice(-6, -3);
   const currentAverageFocusMinutes = average(recent.map((item) => item.averageFocusMinutes));
   const previousAverageFocusMinutes =
     previous.length > 0 ? average(previous.map((item) => item.averageFocusMinutes)) : null;
@@ -175,9 +180,9 @@ function buildHabitTrend(sessions: HabitTrendSession[]): HabitTrend {
   );
 
   let direction: HabitTrend["direction"] = "insufficient";
-  if (chronological.length >= requiredSampleCount) {
+  if (recentWindow.length >= requiredSampleCount) {
     if (previousAverageFocusMinutes === null) {
-      const first = chronological[0]?.averageFocusMinutes ?? 0;
+      const first = recentWindow[0]?.averageFocusMinutes ?? 0;
       const last = latest?.averageFocusMinutes ?? 0;
       direction = last >= first + 2 ? "improving" : last <= first - 2 ? "declining" : "stable";
     } else {
@@ -191,12 +196,12 @@ function buildHabitTrend(sessions: HabitTrendSession[]): HabitTrend {
   }
 
   return {
-    sampleCount: chronological.length,
+    sampleCount: recentWindow.length,
     requiredSampleCount,
-    isEnoughData: chronological.length >= requiredSampleCount,
+    isEnoughData: recentWindow.length >= requiredSampleCount,
     direction,
     summary: buildHabitTrendSummary({
-      sampleCount: chronological.length,
+      sampleCount: recentWindow.length,
       requiredSampleCount,
       direction,
       currentAverageFocusMinutes,
@@ -207,7 +212,7 @@ function buildHabitTrend(sessions: HabitTrendSession[]): HabitTrend {
     previousAverageFocusMinutes,
     currentLongestFocusMinutes: latest?.longestFocusMinutes ?? 0,
     averageReminderResponseRate,
-    sessions: chronological.slice(-7)
+    sessions: recentWindow
   };
 }
 
@@ -220,7 +225,7 @@ async function loadHabitTrend(accessCodeId: string): Promise<HabitTrend | null> 
     .eq("access_code_id", accessCodeId)
     .in("status", ["completed", "expired"])
     .order("end_time", { ascending: false })
-    .limit(7);
+    .limit(30);
 
   if (sessionsError || !sessions || sessions.length === 0) {
     return null;
@@ -248,15 +253,22 @@ async function loadHabitTrend(accessCodeId: string): Promise<HabitTrend | null> 
   );
 
   const trendSessions = sessions
-    .map((session) =>
-      buildHabitTrendSession({
+    .flatMap((session) => {
+      const sessionRecords = recordsBySession[session.id] ?? [];
+      if (!hasEligibleTrendRecords(sessionRecords)) return [];
+
+      const trendSession = buildHabitTrendSession({
         sessionId: session.id,
         startTime: session.start_time,
         durationMinutes: session.duration_minutes,
-        records: recordsBySession[session.id] ?? []
-      })
-    )
-    .filter((item) => item.durationMinutes >= 3 && item.dataCoverageRate > 0);
+        records: sessionRecords
+      });
+
+      if (!isEligibleTrendSession(trendSession)) {
+        return [];
+      }
+      return [trendSession];
+    });
 
   return buildHabitTrend(trendSessions);
 }

@@ -58,7 +58,7 @@ export default function ReportPage() {
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-4xl flex-col px-5 py-8">
       <div className="mb-6">
-        <h1 className="text-3xl font-bold">学习监督报告</h1>
+        <h1 className="text-3xl font-bold">近期学习趋势报告</h1>
         {report && (
           <div
             className={
@@ -69,16 +69,38 @@ export default function ReportPage() {
           >
             {isMockMode
               ? "当前为测试模式，状态识别为模拟结果，本报告仅用于流程测试，不代表真实学习判断。"
-              : "本报告基于AI视觉识别生成，用于帮助家长了解本次学习过程。识别结果仅供参考，可结合实际情况判断。"}
+              : "本报告汇总最近的有效监督记录，用于观察连续学习时间、中断和提醒后恢复的变化。识别结果仅供参考，可结合实际情况判断。"}
           </div>
         )}
-        <p className="mt-2 text-muted">本次监督已结束。</p>
+        <p className="mt-2 text-muted">
+          近期趋势优先展示，当前打开的单次监督作为补充参考。
+        </p>
         {report?.session && (
           <div className="mt-2 text-sm leading-6 text-muted">
-            <div>{formatDateTime(report.session.startTime)} - {formatDateTime(report.session.endTime)}</div>
+            <div>
+              本次监督：{formatDateTime(report.session.startTime)} - {formatDateTime(report.session.endTime)}
+            </div>
             <div>报告版本：{appVersion.version}</div>
           </div>
         )}
+      </div>
+
+      <div className="mb-6 flex flex-wrap gap-2 print:hidden">
+        {report && (
+          <button
+            type="button"
+            onClick={() => window.print()}
+            className="inline-flex h-11 items-center rounded-md bg-brand px-4 font-semibold text-white"
+          >
+            打印近期趋势 / 保存PDF
+          </button>
+        )}
+        <Link
+          href="/"
+          className="inline-flex h-11 items-center rounded-md border border-line px-4 font-semibold"
+        >
+          返回首页
+        </Link>
       </div>
 
       {loading ? (
@@ -88,12 +110,9 @@ export default function ReportPage() {
       ) : report ? (
         <ReportCard
           stats={report.stats}
-          conclusion={report.conclusion ?? report.summary}
-          parentAdvice={report.parentAdvice ?? "建议继续观察孩子的学习节奏。"}
           records={report.records ?? []}
-          reportLevel={report.reportLevel ?? "basic"}
-          trend={report.trend ?? null}
           habitTrend={report.habitTrend ?? null}
+          view="trend"
         />
       ) : (
         <div className="rounded-md border border-line bg-white p-5 text-muted">
@@ -101,23 +120,6 @@ export default function ReportPage() {
         </div>
       )}
 
-      <div className="mt-6 flex flex-wrap gap-2 print:hidden">
-        {report && (
-          <button
-            type="button"
-            onClick={() => window.print()}
-            className="inline-flex h-11 items-center rounded-md border border-line px-4 font-semibold"
-          >
-            打印 / 保存PDF
-          </button>
-        )}
-        <Link
-          href="/"
-          className="inline-flex h-11 items-center rounded-md bg-brand px-4 font-semibold text-white"
-        >
-          返回首页
-        </Link>
-      </div>
       {report && (
         <p className="mt-5 text-xs leading-5 text-muted">
           本报告由Session识别记录按时间段统计生成，不做身份识别，不代表对孩子能力或态度的评价。

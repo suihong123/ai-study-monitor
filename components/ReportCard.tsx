@@ -2,29 +2,24 @@
 
 import { useState } from "react";
 import { normalizeRecordState } from "@/lib/stats";
-import { type HabitTrend, type ReportLevel, type StudyRecord, type StudyStats } from "@/types";
+import { type HabitTrend, type StudyRecord, type StudyStats } from "@/types";
 
-type Trend = Record<string, string> | null;
 type HighlightTone = "brand" | "warn" | "alert" | "neutral";
+type ReportView = "session" | "trend";
 
 export function ReportCard({
   stats,
-  conclusion,
-  parentAdvice,
   records,
-  reportLevel,
-  trend,
-  habitTrend
+  habitTrend,
+  view = "trend"
 }: {
   stats: StudyStats;
-  conclusion: string;
-  parentAdvice: string;
   records: StudyRecord[];
-  reportLevel: ReportLevel;
-  trend: Trend;
   habitTrend?: HabitTrend | null;
+  view?: ReportView;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const showRecentTrend = view === "trend";
   const isMockMode =
     records.length === 0 ||
     records.some((record) => (record.analyze_mode ?? "mock") === "mock");
@@ -36,6 +31,11 @@ export function ReportCard({
   const nextActions = buildNextActions(stats, insufficientData);
   const keyEvents = buildEventTimeline(records);
   const visibleRecords = expanded ? records : buildKeyTimeline(records).slice(0, 12);
+  const recentSessions = habitTrend?.sessions?.slice(-7) ?? [];
+  const maxAverageFocusMinutes = Math.max(
+    1,
+    ...recentSessions.map((item) => item.averageFocusMinutes)
+  );
 
   const keyMetrics = [
     ["总监督", `${stats.totalMinutes}分钟`],
@@ -55,9 +55,81 @@ export function ReportCard({
 
   return (
     <section className="w-full space-y-5">
+      {showRecentTrend && (
+        <div className="rounded-md border border-line bg-white p-5">
+          <h2 className="text-xl font-semibold">近期学习趋势</h2>
+          <p className="mt-3 text-base leading-7 text-muted">
+            {habitTrend?.summary ??
+              "近期有效监督次数还不够，继续完成监督后即可观察连续学习时间和提醒后恢复情况。"}
+          </p>
+          <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-4">
+            {[
+              ["近期有效监督", `${habitTrend?.sampleCount ?? 0}次`],
+              [
+                "平均连续学习",
+                habitTrend?.isEnoughData
+                  ? `${habitTrend.currentAverageFocusMinutes}分钟`
+                  : "待积累"
+              ],
+              [
+                "最近一次最长连续",
+                habitTrend && habitTrend.sampleCount > 0
+                  ? `${habitTrend.currentLongestFocusMinutes}分钟`
+                  : "待积累"
+              ],
+              [
+                "提醒后恢复率",
+                habitTrend?.isEnoughData
+                  ? `${habitTrend.averageReminderResponseRate}%`
+                  : "待积累"
+              ]
+            ].map(([label, value]) => (
+              <div key={label} className="rounded-md bg-panel p-3">
+                <div className="text-sm text-muted">{label}</div>
+                <div className="mt-1 text-xl font-semibold">{value}</div>
+              </div>
+            ))}
+          </div>
+          {recentSessions.length > 0 && (
+            <div className="mt-5">
+              <div className="text-sm font-medium">最近几次连续学习情况</div>
+              <div className="mt-3 space-y-3">
+                {recentSessions.map((item) => {
+                  const barWidth = Math.max(
+                    item.averageFocusMinutes > 0 ? 8 : 0,
+                    Math.round((item.averageFocusMinutes / maxAverageFocusMinutes) * 100)
+                  );
+                  return (
+                    <div key={item.sessionId} className="rounded-md bg-panel p-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
+                        <span className="font-medium">{formatDate(item.startTime)}</span>
+                        <span className="text-muted">
+                          监督 {item.durationMinutes} 分钟 · 中断 {item.interruptionCount} 次
+                        </span>
+                      </div>
+                      <div className="mt-2 h-2 overflow-hidden rounded-full bg-white">
+                        <div
+                          className="h-full rounded-full bg-brand"
+                          style={{ width: `${barWidth}%` }}
+                        />
+                      </div>
+                      <div className="mt-2 text-xs text-muted">
+                        平均连续学习 {item.averageFocusMinutes} 分钟，最长 {item.longestFocusMinutes} 分钟
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       <div className="rounded-md border border-line bg-white p-5">
         <div className="flex flex-wrap items-center gap-2">
-          <h2 className="text-xl font-semibold">学习表现总览</h2>
+          <h2 className="text-xl font-semibold">
+            {showRecentTrend ? "本次监督概览" : "本次监督小结"}
+          </h2>
           {isMockMode && (
             <span className="rounded-md bg-amber-50 px-2 py-1 text-xs font-semibold text-warn">
               测试模式
@@ -89,50 +161,19 @@ export function ReportCard({
         </div>
       </div>
 
-      <div className="rounded-md border border-line bg-white p-5">
-        <h2 className="text-lg font-semibold">学习表现诊断</h2>
-        <div className="mt-4 grid gap-3 md:grid-cols-3">
-          {focusItems.map((item) => (
-            <div key={item.title} className={`rounded-md p-4 ${toneClass(item.tone)}`}>
-              <div className="text-sm font-medium text-ink">{item.title}</div>
-              <p className="mt-2 text-sm leading-6 text-muted">{item.content}</p>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      <div className="rounded-md border border-line bg-white p-5">
-        <h2 className="text-lg font-semibold">习惯养成趋势</h2>
-        <p className="mt-3 text-sm leading-6 text-muted">
-          {habitTrend?.summary ??
-            "趋势分析需要积累足够的数据样本。继续完成多次有效监督后，可观察平均连续学习时间是否提升。"}
-        </p>
-        <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-4">
-          {[
-            ["趋势样本", `${habitTrend?.sampleCount ?? 0}/${habitTrend?.requiredSampleCount ?? 3}次`],
-            ["平均连续学习", habitTrend?.isEnoughData ? `${habitTrend.currentAverageFocusMinutes}分钟` : "样本不足"],
-            ["本次最长连续", `${habitTrend?.currentLongestFocusMinutes ?? stats.longestFocusMinutes}分钟`],
-            ["提醒后恢复率", habitTrend?.isEnoughData ? `${habitTrend.averageReminderResponseRate}%` : "样本不足"]
-          ].map(([label, value]) => (
-            <div key={label} className="rounded-md bg-panel p-3">
-              <div className="text-sm text-muted">{label}</div>
-              <div className="mt-1 text-xl font-semibold">{value}</div>
-            </div>
-          ))}
-        </div>
-        {habitTrend?.sessions && habitTrend.sessions.length > 0 && (
-          <div className="mt-4 space-y-2">
-            {habitTrend.sessions.slice(-5).map((item, index) => (
-              <div key={item.sessionId} className="rounded-md bg-panel p-3 text-sm leading-6">
-                <div className="font-medium">第 {index + 1} 次：{formatDate(item.startTime)}</div>
-                <div className="text-muted">
-                  平均连续学习 {item.averageFocusMinutes} 分钟 / 最长 {item.longestFocusMinutes} 分钟 / 中断 {item.interruptionCount} 次
-                </div>
+      {!insufficientData && (
+        <div className="rounded-md border border-line bg-white p-5">
+          <h2 className="text-lg font-semibold">本次表现观察</h2>
+          <div className="mt-4 grid gap-3 md:grid-cols-3">
+            {focusItems.map((item) => (
+              <div key={item.title} className={`rounded-md p-4 ${toneClass(item.tone)}`}>
+                <div className="text-sm font-medium text-ink">{item.title}</div>
+                <p className="mt-2 text-sm leading-6 text-muted">{item.content}</p>
               </div>
             ))}
           </div>
-        )}
-      </div>
+        </div>
+      )}
 
       <div className="rounded-md border border-line bg-white p-5">
         <h2 className="text-lg font-semibold">本次关键节点</h2>
@@ -156,7 +197,7 @@ export function ReportCard({
       </div>
 
       <div className="rounded-md border border-line bg-white p-5">
-        <h2 className="text-lg font-semibold">给家长的建议</h2>
+        <h2 className="text-lg font-semibold">本次建议</h2>
         <div className="mt-3 space-y-2 text-sm leading-6 text-muted">
           {nextActions.map((item) => (
             <div key={item} className="rounded-md bg-panel p-3">{item}</div>
@@ -164,15 +205,10 @@ export function ReportCard({
         </div>
       </div>
 
-      <div className="rounded-md border border-line bg-white p-5">
-        <h2 className="text-lg font-semibold">趋势分析</h2>
-        <div className="mt-3 rounded-md bg-amber-50 p-4 text-sm leading-6 text-warn">
-          {buildTrendMessage(reportLevel, trend, records, insufficientData, habitTrend)}
-        </div>
-      </div>
-
       <details className="rounded-md border border-line bg-white p-5">
-        <summary className="cursor-pointer text-lg font-semibold">详细数据</summary>
+        <summary className="cursor-pointer text-lg font-semibold">
+          查看本次详细记录
+        </summary>
         <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-3">
           {detailMetrics.map(([label, value]) => (
             <div key={label} className="rounded-md bg-panel p-3">
@@ -193,11 +229,12 @@ export function ReportCard({
             </div>
           ))}
         </div>
-      </details>
-
-      <div className="rounded-md border border-line bg-white p-5">
-        <h2 className="text-lg font-semibold">{expanded ? "全部识别记录" : "过程记录"}</h2>
-        <div className="mt-4 space-y-3">
+        <div className="mt-6 border-t border-line pt-5">
+          <h3 className="font-semibold">
+            {expanded ? "全部识别记录" : "关键识别记录"}
+          </h3>
+        </div>
+        <div className="mt-3 space-y-3">
           {visibleRecords.length === 0 ? (
             <p className="text-sm text-muted">暂无识别记录。</p>
           ) : (
@@ -210,9 +247,9 @@ export function ReportCard({
                   <span className="rounded-md bg-white px-2 py-1 font-medium">
                     {displayStateText(record)}
                   </span>
-                  <span className="text-muted">
-                    {record.triggered_reminder ? "已提醒" : "未提醒"}
-                  </span>
+                  {record.triggered_reminder && (
+                    <span className="text-muted">已提醒</span>
+                  )}
                   {record.manual_corrected && (
                     <span className="rounded-md bg-amber-50 px-2 py-1 text-warn">
                       已手动纠正
@@ -234,19 +271,7 @@ export function ReportCard({
             查看全部识别记录
           </button>
         )}
-      </div>
-
-      <div className="rounded-md border border-line bg-white p-5">
-        <h2 className="text-lg font-semibold">原始结论</h2>
-        <p className="mt-3 whitespace-pre-line leading-7 text-muted">
-          {insufficientData ? "数据量或数据覆盖不足，当前不生成学习诊断。" : conclusion}
-        </p>
-        <p className="mt-3 whitespace-pre-line leading-7 text-muted">
-          {insufficientData
-            ? "建议先完成一段不少于10分钟的监督，确认摄像头角度、识别记录和报告生成流程稳定后，再参考学习建议。"
-            : parentAdvice}
-        </p>
-      </div>
+      </details>
     </section>
   );
 }
@@ -477,40 +502,6 @@ function countAwayEvents(records: StudyRecord[]) {
   });
 
   return count;
-}
-
-function buildTrendMessage(
-  reportLevel: ReportLevel,
-  trend: Trend,
-  records: StudyRecord[],
-  insufficientData: boolean,
-  habitTrend?: HabitTrend | null
-) {
-  if (!habitTrend || !habitTrend.isEnoughData) {
-    return "趋势分析需要积累足够的数据样本。建议至少完成3次有效监督后，再观察平均连续学习时间是否提升、提醒后恢复是否变快、中断次数是否减少。";
-  }
-
-  if (habitTrend.direction === "improving") {
-    return "最近几次监督显示，平均连续学习时间有提升迹象。当前更适合继续保持监督节奏，帮助孩子把外部提醒逐步变成学习习惯。";
-  }
-
-  if (habitTrend.direction === "declining") {
-    return "最近几次监督显示，平均连续学习时间有所下降。建议先排查任务难度、学习环境和拍摄稳定性，再缩短单次学习目标。";
-  }
-
-  if (insufficientData || records.length < 20) {
-    return "本次单次数据仍偏少，但历史样本已可开始观察习惯趋势。建议继续稳定使用，重点看连续学习时间是否逐渐变长。";
-  }
-
-  if (reportLevel === "basic") {
-    return "最近几次监督表现基本稳定。当前阶段建议重点观察平均连续学习时间，而不是单次离座或短暂发呆。";
-  }
-
-  if (!trend) {
-    return "当前历史样本不足，暂不生成趋势判断。";
-  }
-
-  return "已有一定识别记录，但长期趋势仍需要更多天的监督样本支撑。当前阶段建议关注平均连续学习时间和提醒后恢复率是否持续改善。";
 }
 
 function displayStateText(record: StudyRecord) {

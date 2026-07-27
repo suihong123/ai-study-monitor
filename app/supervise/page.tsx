@@ -196,9 +196,9 @@ export default function SupervisePage() {
   const [audioTestSteps, setAudioTestSteps] = useState<AudioTestStep[]>([]);
   const [audioReady, setAudioReady] = useState(false);
   const [wakeLockMessage, setWakeLockMessage] = useState("");
-  const [awayDurationSeconds, setAwayDurationSeconds] = useState(0);
-  const [awayCanRemind, setAwayCanRemind] = useState(false);
-  const [lastAudioResult, setLastAudioResult] = useState("暂无声音播放记录");
+  const [, setAwayDurationSeconds] = useState(0);
+  const [, setAwayCanRemind] = useState(false);
+  const [, setLastAudioResult] = useState("暂无声音播放记录");
   const [completedReport, setCompletedReport] = useState<GeneratedReport | null>(null);
   const [completedReportUrl, setCompletedReportUrl] = useState("");
 
@@ -278,9 +278,6 @@ export default function SupervisePage() {
         )
       )
     : 0;
-  const awayCooldownRemainingSeconds =
-    lastReminder?.type === "away" ? reminderCooldownRemainingSeconds : 0;
-
   const getLocalReminderAudio = useCallback(() => {
     let audio = localReminderAudioRef.current;
     if (!audio) {
@@ -1369,7 +1366,7 @@ export default function SupervisePage() {
     return (
       <main className="mx-auto flex min-h-screen w-full max-w-4xl flex-col px-5 py-8">
         <div className="mb-6">
-          <h1 className="text-3xl font-bold">学习监督报告</h1>
+          <h1 className="text-3xl font-bold">本次监督已完成</h1>
           <div
             className={
               isMockMode
@@ -1379,16 +1376,16 @@ export default function SupervisePage() {
           >
             {isMockMode
               ? "当前为测试模式，状态识别为模拟结果，本报告仅用于流程测试，不代表真实学习判断。"
-              : "本报告基于AI视觉识别生成，用于帮助家长了解本次学习过程。识别结果仅供参考，可结合实际情况判断。"}
+              : "以下是本次监督小结，基于AI视觉识别生成。识别结果仅供参考，可结合实际情况判断。"}
           </div>
-          <p className="mt-2 text-muted">本次监督已结束，报告已生成。</p>
+          <p className="mt-2 text-muted">本次监督已结束并完成结算。</p>
           <div className="mt-4 flex flex-col gap-2 sm:flex-row">
             <button
               type="button"
               onClick={() => router.push(completedReportUrl)}
               className="h-11 rounded-md bg-brand px-4 font-semibold text-white"
             >
-              查看完整报告
+              查看近期趋势报告
             </button>
             <button
               type="button"
@@ -1401,12 +1398,9 @@ export default function SupervisePage() {
         </div>
         <ReportCard
           stats={completedReport.stats}
-          conclusion={completedReport.conclusion}
-          parentAdvice={completedReport.parentAdvice}
           records={completedReport.records}
-          reportLevel={completedReport.reportLevel}
-          trend={completedReport.trend}
           habitTrend={completedReport.habitTrend ?? null}
+          view="session"
         />
       </main>
     );
@@ -1660,65 +1654,53 @@ export default function SupervisePage() {
               <div className="mt-2 text-sm text-muted">暂无提醒</div>
             )}
           </div>
-          <div className="rounded-md border border-line bg-white p-4">
-            <div className="text-sm font-medium">提醒诊断</div>
-            <div className="mt-2 space-y-1 text-sm leading-6 text-muted">
-              <div>当前模式：{currentModeLabel}</div>
-              <div>最近一次识别时间：{latestRecordTime}</div>
-              <div>当前 presence：{presence}</div>
-              <div>当前 learning_state：{learningState}</div>
-              <div>当前 away 持续时长：{formatDurationSeconds(awayDurationSeconds)}</div>
-              <div>是否满足离座提醒条件：{awayCanRemind ? "是" : "否"}</div>
-              <div>
-                是否处于冷却中：
-                {awayCooldownRemainingSeconds > 0
-                  ? `是，还需 ${formatDurationSeconds(awayCooldownRemainingSeconds)}`
-                  : "否"}
+          <details className="rounded-md border border-line bg-white p-4">
+            <summary className="cursor-pointer text-sm font-medium">
+              监督详情
+              <span className="ml-2 font-normal text-muted">
+                {records.length > 0 ? `已完成 ${records.length} 次识别` : "等待首次识别"}
+              </span>
+            </summary>
+            <div className="mt-3 grid grid-cols-2 gap-2 text-sm">
+              <div className="rounded-md bg-panel p-2">
+                <div className="text-xs text-muted">最近检查</div>
+                <div className="mt-1 font-medium">{latestRecordTime}</div>
               </div>
-              <div>
-                最近一次提醒类型：
-                {lastReminder ? reminderLabels[lastReminder.type] : "暂无"}
+              <div className="rounded-md bg-panel p-2">
+                <div className="text-xs text-muted">检查间隔</div>
+                <div className="mt-1 font-medium">{currentIntervalSeconds}秒</div>
               </div>
-              <div>最近一次声音播放结果：{lastAudioResult}</div>
-              <div>当前识别间隔：{currentIntervalSeconds}秒</div>
             </div>
-          </div>
-          <div className="rounded-md border border-line bg-white p-4">
-            <div className="text-sm font-medium">最近记录</div>
-            <div className="mt-3 space-y-2 text-sm">
-              {records.slice(-10).reverse().map((record, index) => (
+            <div className="mt-4 text-sm font-medium">最近动态</div>
+            <div className="mt-2 space-y-2 text-sm">
+              {records.slice(-5).reverse().map((record, index) => (
                 <div key={`${record.timestamp}-${index}`} className="rounded-md bg-panel px-3 py-2">
-                  <div className="font-medium">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="font-medium">{displayStateText(record)}</span>
+                    <span className="text-xs text-muted">
                     {new Date(record.timestamp).toLocaleTimeString("zh-CN", {
                       hour: "2-digit",
                       minute: "2-digit",
                       second: "2-digit"
                     })}
+                    </span>
                   </div>
-                  <div className="mt-1">
-                    {displayStateText(record)}
-                    {record.triggered_reminder ? "，已提醒" : ""}
+                  <div className="mt-1 text-xs leading-5 text-muted">
+                    {friendlyRecordDetail(record)}
                   </div>
-                  <div className="mt-1 text-xs text-muted">
-                    {record.triggered_reminder ? "已提醒" : "未提醒"}
-                    {record.reminder_type && ` / ${reminderLabels[record.reminder_type]}`}
-                  </div>
+                  {record.triggered_reminder && (
+                    <div className="mt-1 text-xs text-warn">
+                      已播放{record.reminder_type ? reminderLabels[record.reminder_type] : "学习提醒"}
+                    </div>
+                  )}
                   {record.manual_corrected && (
                     <div className="mt-1 text-xs text-brand">用户已手动标记</div>
-                  )}
-                  {!record.manual_corrected && record.reason?.includes("系统修正") && (
-                    <div className="mt-1 text-xs text-muted">系统修正</div>
-                  )}
-                  {record.reason && (
-                    <div className="mt-1 text-xs leading-5 text-muted">
-                      原因：{record.reason}
-                    </div>
                   )}
                 </div>
               ))}
               {records.length === 0 && <div className="text-muted">暂无记录</div>}
             </div>
-          </div>
+          </details>
         </aside>
       </div>
       {current && !placementConfirmed && !needsRecoveryDecision && (
@@ -1960,6 +1942,15 @@ function displayStateText(record: StudyRecord) {
   if (currentPresence === "away") return "离座";
   if (currentLearningState === "studying") return "在位 · 学习中";
   return "在位 · 无法判断";
+}
+
+function friendlyRecordDetail(record: StudyRecord) {
+  const currentPresence = record.presence ?? legacyPresenceFromStatus(record.status);
+  const currentLearningState = record.learning_state ?? legacyLearningStateFromStatus(record.status);
+  if (record.manual_corrected) return "已按用户标记更新本次状态。";
+  if (currentPresence === "away") return "当前画面中没有看到孩子，系统会继续观察。";
+  if (currentLearningState === "studying") return "当前看到了较明确的学习动作。";
+  return "已看到孩子，暂未看清明确学习动作，系统会继续观察。";
 }
 
 function legacyPresenceFromStatus(status: StudyStatus): Presence {
