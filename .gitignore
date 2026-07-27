@@ -3,5 +3,6 @@ node_modules
 .env
 .env.local
 *.log
+*.tsbuildinfo
 public/captures/*
 !public/captures/.gitkeep

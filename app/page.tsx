@@ -3,6 +3,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { getDeviceId } from "@/lib/device";
+import { privacyNoticeText, privacyNoticeVersion } from "@/lib/privacy";
 import { loadReportHistory, reportUrl, saveReportHistory, type ReportHistoryEntry } from "@/lib/report-history";
 import { appVersion } from "@/lib/version";
 import type { AccessCode, StudySession } from "@/types";
@@ -11,7 +12,6 @@ type CurrentSupervision = {
   accessCode: AccessCode;
   session: StudySession;
   totalRemainingMinutes: number;
-  todayRemainingMinutes: number;
 };
 
 export default function HomePage() {
@@ -19,6 +19,7 @@ export default function HomePage() {
   const [code, setCode] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [privacyAcknowledged, setPrivacyAcknowledged] = useState(true);
   const [reportHistory, setReportHistory] = useState<ReportHistoryEntry[]>([]);
   const [recoverableSupervision, setRecoverableSupervision] =
     useState<CurrentSupervision | null>(null);
@@ -44,7 +45,9 @@ export default function HomePage() {
         body: JSON.stringify({
           action: "validate",
           code,
-          deviceId: getDeviceId()
+          deviceId: getDeviceId(),
+          privacyAcknowledged,
+          privacyNoticeVersion
         })
       });
       const result = await response.json();
@@ -57,8 +60,7 @@ export default function HomePage() {
       const supervision = {
         accessCode: result.accessCode,
         session: result.session,
-        totalRemainingMinutes: result.totalRemainingMinutes,
-        todayRemainingMinutes: result.todayRemainingMinutes
+        totalRemainingMinutes: result.totalRemainingMinutes
       };
 
       if (result.recoverable) {
@@ -153,9 +155,18 @@ export default function HomePage() {
             required
           />
           {error && <p className="mt-3 text-sm text-alert">{error}</p>}
+          <label className="mt-4 flex items-start gap-2 text-sm leading-6 text-muted">
+            <input
+              type="checkbox"
+              checked={privacyAcknowledged}
+              onChange={(event) => setPrivacyAcknowledged(event.target.checked)}
+              className="mt-1 h-4 w-4 shrink-0"
+            />
+            <span>{privacyNoticeText}</span>
+          </label>
           <button
             type="submit"
-            disabled={loading}
+            disabled={loading || !privacyAcknowledged}
             className="mt-5 h-12 w-full rounded-md bg-brand px-4 font-semibold text-white disabled:opacity-60"
           >
             {loading ? "正在验证" : "开始监督"}
@@ -208,9 +219,9 @@ export default function HomePage() {
 
       <section className="mb-4 rounded-md border border-line bg-white p-4 text-sm leading-7 text-muted">
         <div className="font-semibold text-ink">隐私声明</div>
-        <p>本系统不做人脸识别，不进行身份识别，不保存视频。</p>
-        <p>仅分析学习状态，不对外共享图片，用户可删除记录。</p>
-        <p>图片默认24小时自动删除。</p>
+        <p>本系统不做人脸识别，不进行身份识别，不保存视频或截图。</p>
+        <p>监督时只截取单帧用于本次状态分析；Qwen 模式下会发送给第三方模型。</p>
+        <p>系统会保存监督记录和学习报告数据，便于查看历史报告和习惯趋势。</p>
       </section>
 
       {recoverableSupervision && (

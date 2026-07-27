@@ -114,9 +114,9 @@ type AdminSectionKey = "overview" | "access-codes" | "sessions" | "logs" | "cost
 
 const planLabels: Record<PlanType, string> = {
   trial: "2小时体验版",
-  basic_monthly: "月卡（30天）",
-  standard_monthly: "季卡（90天）",
-  pro_monthly: "年卡（365天）"
+  basic_monthly: "月卡（60小时，永久有效）",
+  standard_monthly: "季卡（180小时，永久有效）",
+  pro_monthly: "年卡（720小时，永久有效）"
 };
 
 const planDescriptions: Record<PlanType, string[]> = {
@@ -317,9 +317,9 @@ export default function AdminPage() {
   async function updateCode(
     id: string,
     payload:
-      | { action: "disable" | "unbind" | "reset-today"; reason?: string }
+      | { action: "disable" | "unbind"; reason?: string }
       | { action: "set-status"; status: AccessCodeStatus; reason?: string }
-      | { action: "adjust-minutes"; mode: "add" | "reduce" | "set-total" | "set-daily"; minutes: number; reason?: string }
+      | { action: "adjust-minutes"; mode: "add" | "reduce" | "set-total"; minutes: number; reason?: string }
       | { action: "update-plan"; planType: PlanType; resetUsed?: boolean; reason?: string }
       | { action: "update-admin-notes"; adminNotes: string; reason?: string }
   ) {
@@ -358,7 +358,7 @@ export default function AdminPage() {
     void updateCode(item.id, { action: "set-status", status, reason });
   }
 
-  function adjustQuota(item: AdminAccessCode, mode: "add" | "reduce" | "set-total" | "set-daily") {
+  function adjustQuota(item: AdminAccessCode, mode: "add" | "reduce" | "set-total") {
     const value = window.prompt("请输入分钟数");
     const minutes = Number(value);
     if (!Number.isFinite(minutes) || minutes < 0) return;

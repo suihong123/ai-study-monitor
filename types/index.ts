@@ -106,6 +106,8 @@ export type StudySession = {
   ip: string | null;
   user_agent: string | null;
   last_active_at: string | null;
+  privacy_notice_version?: string | null;
+  privacy_acknowledged_at?: string | null;
   created_at: string;
 };
 

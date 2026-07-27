@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { canUseAccessCode, statusMessages } from "@/lib/access-code-status";
 import { isAdminRequest } from "@/lib/admin";
-import { defaultPlanConfigs, getTodayKey, planTotalMinutes } from "@/lib/plans";
+import { remainingMinutes } from "@/lib/entitlements";
+import { defaultPlanConfigs, planTotalMinutes } from "@/lib/plans";
+import { privacyNoticeVersion } from "@/lib/privacy";
 import {
   sessionTimeoutSeconds,
   settleExpiredSessionsForAccessCode,
@@ -21,7 +23,6 @@ import type {
   AccessCodeStatus,
   PlanConfig,
   PlanType,
-  ReportLevel,
   StudyRecord,
 } from "@/types";
 
@@ -54,7 +55,13 @@ export async function POST(request: NextRequest) {
   if (!supabaseAdmin) return missingSupabase();
 
   if (action === "validate") {
-    return handleValidateCode(request, body.code, body.deviceId);
+    return handleValidateCode(
+      request,
+      body.code,
+      body.deviceId,
+      body.privacyAcknowledged,
+      body.privacyNoticeVersion
+    );
   }
 
   if (!isAdminRequest(request)) {
@@ -71,13 +78,6 @@ export async function POST(request: NextRequest) {
 
   if (action === "unbind") {
     return adminUpdateAccessCode(request, body.id, { device_id: null }, "unbind_device", body.reason);
-  }
-
-  if (action === "reset-today") {
-    return adminUpdateAccessCode(request, body.id, {
-      used_minutes_today: 0,
-      last_reset_date: getTodayKey()
-    }, "reset_daily_minutes", body.reason);
   }
 
   if (action === "set-status") {
@@ -129,7 +129,13 @@ async function loadPlanConfig(planType: PlanType) {
   return ((data as PlanConfig | null) ?? fallback) as PlanConfig;
 }
 
-async function handleValidateCode(request: NextRequest, code: string, deviceId: string) {
+async function handleValidateCode(
+  request: NextRequest,
+  code: string,
+  deviceId: string,
+  privacyAcknowledged: boolean,
+  submittedPrivacyNoticeVersion?: string
+) {
   const ip = getClientIp(request);
   const userAgent = getUserAgent(request);
   const limited = await checkRateLimit({
@@ -148,6 +154,12 @@ async function handleValidateCode(request: NextRequest, code: string, deviceId: 
       errorMessage: "缺少访问码或设备ID"
     });
     return NextResponse.json({ error: "请输入访问码" }, { status: 400 });
+  }
+  if (!privacyAcknowledged) {
+    return NextResponse.json(
+      { error: "请先确认摄像头与数据处理说明" },
+      { status: 400 }
+    );
   }
 
   const { data, error } = await supabaseAdmin!
@@ -197,9 +209,6 @@ async function handleValidateCode(request: NextRequest, code: string, deviceId: 
       { status: 403 }
     );
   }
-  if (data.expires_at && new Date(data.expires_at).getTime() < Date.now()) {
-    return NextResponse.json({ error: "访问码已过期" }, { status: 403 });
-  }
   if (data.device_id && data.device_id !== deviceId) {
     await logSuspicious({
       accessCodeId: data.id,
@@ -231,20 +240,12 @@ async function handleValidateCode(request: NextRequest, code: string, deviceId: 
     return NextResponse.json({ error: refreshError.message }, { status: 500 });
   }
 
-  const today = getTodayKey();
-  const resetValues =
-    refreshedCode.last_reset_date === today
-      ? {}
-      : { used_minutes_today: 0, last_reset_date: today };
-  const normalizedCode = {
-    ...refreshedCode,
-    ...resetValues
-  };
+  const normalizedCode = refreshedCode;
 
-  const totalRemainingMinutes =
-    normalizedCode.total_minutes - normalizedCode.used_minutes;
-  const todayRemainingMinutes =
-    normalizedCode.daily_minutes - normalizedCode.used_minutes_today;
+  const totalRemainingMinutes = remainingMinutes(
+    normalizedCode.total_minutes,
+    normalizedCode.used_minutes
+  );
 
   if (totalRemainingMinutes <= 0) {
     await logSuspicious({
@@ -260,7 +261,7 @@ async function handleValidateCode(request: NextRequest, code: string, deviceId: 
     );
   }
 
-  const updates: Record<string, unknown> = { ...resetValues };
+  const updates: Record<string, unknown> = {};
   if (!data.device_id) updates.device_id = deviceId;
 
   if (Object.keys(updates).length > 0) {
@@ -301,11 +302,33 @@ async function handleValidateCode(request: NextRequest, code: string, deviceId: 
   }
 
   if (activeSession) {
+    const acknowledgedAt = activeSession.privacy_acknowledged_at ?? new Date().toISOString();
+    const noticeVersion =
+      activeSession.privacy_notice_version ??
+      (submittedPrivacyNoticeVersion === privacyNoticeVersion
+        ? submittedPrivacyNoticeVersion
+        : privacyNoticeVersion);
+    if (!activeSession.privacy_acknowledged_at || !activeSession.privacy_notice_version) {
+      const { error: privacyUpdateError } = await supabaseAdmin!
+        .from("sessions")
+        .update({
+          privacy_notice_version: noticeVersion,
+          privacy_acknowledged_at: acknowledgedAt
+        })
+        .eq("id", activeSession.id);
+      if (privacyUpdateError) {
+        return NextResponse.json(
+          { error: privacyUpdateError.message },
+          { status: 500 }
+        );
+      }
+      activeSession.privacy_notice_version = noticeVersion;
+      activeSession.privacy_acknowledged_at = acknowledgedAt;
+    }
     return NextResponse.json({
       accessCode: normalizedCode,
       session: activeSession,
       totalRemainingMinutes,
-      todayRemainingMinutes,
       recoverable: true
     });
   }
@@ -322,7 +345,12 @@ async function handleValidateCode(request: NextRequest, code: string, deviceId: 
       session_token: sessionToken,
       status: "active",
       ip,
-      user_agent: userAgent
+      user_agent: userAgent,
+      privacy_notice_version:
+        submittedPrivacyNoticeVersion === privacyNoticeVersion
+          ? submittedPrivacyNoticeVersion
+          : privacyNoticeVersion,
+      privacy_acknowledged_at: now
     })
     .select("*")
     .single();
@@ -340,7 +368,6 @@ async function handleValidateCode(request: NextRequest, code: string, deviceId: 
     accessCode: normalizedCode,
     session,
     totalRemainingMinutes,
-    todayRemainingMinutes,
     recoverable: false
   });
 }
@@ -352,9 +379,6 @@ async function createCode(planType: PlanType) {
   }
 
   const code = Math.random().toString(36).slice(2, 8).toUpperCase();
-  const expiresAt = new Date();
-  expiresAt.setMonth(expiresAt.getMonth() + 3);
-
   const { data, error } = await supabaseAdmin!
     .from("access_codes")
     .insert({
@@ -364,12 +388,12 @@ async function createCode(planType: PlanType) {
       used_minutes: 0,
       daily_minutes: plan.daily_minutes,
       used_minutes_today: 0,
-      last_reset_date: getTodayKey(),
-      report_level: plan.report_level,
+      last_reset_date: null,
+      report_level: "basic",
       base_interval_seconds: plan.base_interval_seconds,
       min_interval_seconds: plan.min_interval_seconds,
       status: "active",
-      expires_at: expiresAt.toISOString()
+      expires_at: null
     })
     .select("*")
     .single();
@@ -497,7 +521,7 @@ async function adjustMinutes(
   request: NextRequest,
   body: {
     id: string;
-    mode: "add" | "reduce" | "set-total" | "set-daily";
+    mode: "add" | "reduce" | "set-total";
     minutes: number;
     reason?: string;
   }
@@ -519,12 +543,8 @@ async function adjustMinutes(
     actionType = "reduce_minutes";
   }
   if (body.mode === "set-total") {
-    values.total_minutes = minutes;
+    values.total_minutes = Math.max(before.used_minutes, minutes);
     actionType = "update_total_minutes";
-  }
-  if (body.mode === "set-daily") {
-    values.daily_minutes = minutes;
-    actionType = "update_daily_minutes";
   }
   return adminUpdateAccessCode(request, body.id, values, actionType, body.reason);
 }
@@ -540,18 +560,23 @@ async function updatePlan(
 ) {
   const plan = await loadPlanConfig(body.planType);
   if (!plan) return NextResponse.json({ error: "套餐类型无效" }, { status: 400 });
+  const before = await getAccessCode(body.id);
 
   const values: Record<string, unknown> = {
     plan_type: plan.plan_type,
     daily_minutes: plan.daily_minutes,
     base_interval_seconds: plan.base_interval_seconds,
     min_interval_seconds: plan.min_interval_seconds,
-    report_level: plan.report_level
+    report_level: "basic",
+    total_minutes: body.resetUsed
+      ? planTotalMinutes[plan.plan_type]
+      : Math.max(planTotalMinutes[plan.plan_type], before.used_minutes),
+    expires_at: null
   };
   if (body.resetUsed) {
     values.used_minutes = 0;
     values.used_minutes_today = 0;
-    values.last_reset_date = getTodayKey();
+    values.last_reset_date = null;
   }
   return adminUpdateAccessCode(request, body.id, values, "update_plan", body.reason);
 }
@@ -560,11 +585,7 @@ async function handleFinishSession(request: NextRequest, body: {
   sessionId: string;
   accessCodeId: string;
   records?: StudyRecord[];
-  endTime: string;
-  durationMinutes?: number;
-  aiCallCount?: number;
   sessionToken?: string;
-  reportLevel?: ReportLevel;
 }) {
   if (!body.sessionId || !body.accessCodeId) {
     return NextResponse.json({ error: "缺少会话信息" }, { status: 400 });
@@ -573,18 +594,14 @@ async function handleFinishSession(request: NextRequest, body: {
     accessCodeId: body.accessCodeId,
     sessionId: body.sessionId,
     sessionToken: body.sessionToken
-  });
+  }, { allowQuotaExhausted: true });
   if (!auth.ok) return auth.response;
 
   const records = Array.isArray(body.records) ? body.records : undefined;
   const result = await settleSession({
     sessionId: body.sessionId,
     accessCodeId: body.accessCodeId,
-    endTime: body.endTime,
-    durationMinutes: body.durationMinutes,
     records,
-    aiCallCount: body.aiCallCount,
-    reportLevel: auth.context.accessCode.report_level,
     status: "completed"
   });
 

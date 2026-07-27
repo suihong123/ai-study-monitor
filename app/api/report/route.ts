@@ -5,20 +5,6 @@ import { calculateStats, normalizeRecordState } from "@/lib/stats";
 import { supabaseAdmin } from "@/lib/supabase/server";
 import type { HabitTrend, HabitTrendSession, ReportLevel, ReportPayload, StudyRecord } from "@/types";
 
-function findDeclinePeriod(records: StudyRecord[]) {
-  const midpoint = Math.floor(records.length / 2);
-  if (records.length < 6) return "样本较少，暂不判断明显下降时段。";
-
-  const firstHalf = records.slice(0, midpoint);
-  const secondHalf = records.slice(midpoint);
-  const firstFocus = firstHalf.filter((r) => r.status === "studying").length;
-  const secondFocus = secondHalf.filter((r) => r.status === "studying").length;
-
-  return secondFocus < firstFocus
-    ? "后半段专注记录减少，建议关注学习后半程疲劳。"
-    : "本次未发现明显专注下降时段。";
-}
-
 function buildBasicConclusion(stats: ReturnType<typeof calculateStats>) {
   if (stats.focusRate >= 80) return "本次明确学习行为占比较高，学习过程整体稳定。";
   if (stats.focusRate >= 60) return "本次学习有一定明确学习行为，也存在部分证据不足记录。";
@@ -57,27 +43,6 @@ function buildParentAdvice(stats: ReturnType<typeof calculateStats>) {
     advice.push("建议保持当前学习安排，结束后用简短复盘帮助孩子确认完成情况。");
   }
   return advice.join("\n");
-}
-
-function buildMockTrend(reportLevel: ReportLevel, records: StudyRecord[]) {
-  if (reportLevel === "basic") return null;
-
-  const base = {
-    declinePeriod: findDeclinePeriod(records),
-    statusSummary: "学习前段进入状态较快，中后段需要关注是否能持续看到明确学习行为。",
-    segmentSuggestion: records.length >= 50 ? "建议分段学习" : "暂不强制分段"
-  };
-
-  if (reportLevel === "standard") return base;
-
-  return {
-    ...base,
-    sevenDayTrend: "最近7天专注率模拟趋势：68% -> 72% -> 70% -> 76% -> 74% -> 78% -> 80%。",
-    weekOverWeek: "与上周同比模拟提升约6个百分点。",
-    distractionWindow: "证据不足高发时间段模拟为学习开始后35-50分钟。",
-    learningProfile: "学习状态画像：启动较快，明确学习行为记录中等，后半程更依赖环境稳定。",
-    interventionAdvice: "家长可在第30分钟安排一次短暂停顿，帮助孩子确认剩余任务。"
-  };
 }
 
 function focusSegmentsFromRecords(records: StudyRecord[]) {
@@ -355,7 +320,7 @@ async function generateReport(
 
   const records = (recordsData ?? []) as StudyRecord[];
   const stats = calculateStats(records, session.duration_minutes ?? undefined);
-  const reportLevel = (session.report_level ?? accessCode.report_level ?? "basic") as ReportLevel;
+  const reportLevel: ReportLevel = "basic";
   const isMockMode = records.length === 0 || records.some((record) => (record.analyze_mode ?? "mock") === "mock");
   const insufficientData =
     stats.totalMinutes < 10 || records.length < 5 || stats.dataCoverageRate < 50;
@@ -369,7 +334,7 @@ async function generateReport(
     : isMockMode
     ? "当前为测试数据，建议先重点测试摄像头角度、监督流程和报告展示效果。"
     : buildParentAdvice(stats);
-  const trend = buildMockTrend(reportLevel, records);
+  const trend = null;
   const habitTrend = await loadHabitTrend(session.access_code_id);
 
   const summary = [
@@ -389,7 +354,7 @@ async function generateReport(
     stats,
     records,
     reportLevel,
-    provider: reportLevel === "basic" ? "template" : "mock-deepseek",
+    provider: "template",
     session: {
       id: session.id,
       startTime: session.start_time,

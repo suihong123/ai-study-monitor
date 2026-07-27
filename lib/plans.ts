@@ -25,7 +25,7 @@ export const defaultPlanConfigs: Record<PlanType, Omit<PlanConfig, "id" | "creat
     daily_minutes: 10800,
     base_interval_seconds: 60,
     min_interval_seconds: 30,
-    report_level: "standard",
+    report_level: "basic",
     price_suggest: "共180小时监督时长"
   },
   pro_monthly: {
@@ -34,7 +34,7 @@ export const defaultPlanConfigs: Record<PlanType, Omit<PlanConfig, "id" | "creat
     daily_minutes: 43200,
     base_interval_seconds: 30,
     min_interval_seconds: 15,
-    report_level: "advanced",
+    report_level: "basic",
     price_suggest: "共720小时监督时长"
   }
 };

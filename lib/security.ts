@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { canUseAccessCode, statusMessages } from "@/lib/access-code-status";
+import { calculateElapsedWholeMinutes, remainingMinutes } from "@/lib/entitlements";
 import { supabaseAdmin } from "@/lib/supabase/server";
 import type { AccessCode, AccessCodeStatus, StudySession } from "@/types";
 
@@ -150,7 +151,8 @@ export async function validateSessionRequest(
     accessCodeId?: string;
     sessionId?: string;
     sessionToken?: string;
-  }
+  },
+  options: { allowQuotaExhausted?: boolean } = {}
 ): Promise<
   | { ok: true; context: SessionContext }
   | { ok: false; response: NextResponse; ip: string; userAgent: string }
@@ -245,17 +247,23 @@ export async function validateSessionRequest(
     };
   }
 
-  const totalRemaining = accessCode.total_minutes - accessCode.used_minutes;
+  const totalRemaining = remainingMinutes(
+    accessCode.total_minutes,
+    accessCode.used_minutes
+  );
+  const activeElapsedMinutes = calculateElapsedWholeMinutes(
+    session.start_time,
+    new Date().toISOString()
+  );
+  const quotaExhausted =
+    totalRemaining <= 0 ||
+    (!options.allowQuotaExhausted && activeElapsedMinutes >= totalRemaining);
 
   const status = accessCode.status as AccessCodeStatus;
-  const expiredByDate =
-    accessCode.expires_at && new Date(accessCode.expires_at).getTime() < Date.now();
-  if (!canUseAccessCode(status) || expiredByDate || totalRemaining <= 0) {
+  if (!canUseAccessCode(status) || quotaExhausted) {
     const message =
-      totalRemaining <= 0
+      quotaExhausted
         ? "额度不足仍继续调用"
-        : expiredByDate
-        ? statusMessages.expired
         : statusMessages[status] || "访问码不可用";
     if (status === "blacklist") {
       await logSuspicious({
@@ -283,7 +291,13 @@ export async function validateSessionRequest(
       ok: false,
       ip,
       userAgent,
-      response: NextResponse.json({ error: message }, { status: 403 })
+      response: NextResponse.json(
+        {
+          error: quotaExhausted ? "监督时长已用完，本次监督将自动结束" : message,
+          code: quotaExhausted ? "quota_exhausted" : "access_code_unavailable"
+        },
+        { status: 403 }
+      )
     };
   }
 

@@ -25,7 +25,6 @@ type CurrentSupervision = {
   accessCode: AccessCode;
   session: StudySession;
   totalRemainingMinutes: number;
-  todayRemainingMinutes: number;
 };
 
 type LastReminder = {
@@ -161,6 +160,7 @@ export default function SupervisePage() {
   const finishingRef = useRef(false);
   const analyzingRef = useRef(false);
   const analyzeRef = useRef<() => Promise<void>>(async () => {});
+  const finishRef = useRef<() => Promise<void>>(async () => {});
   const intensityUntilRef = useRef(0);
   const abnormalLockRef = useRef(false);
   const aiCallCountRef = useRef(0);
@@ -838,6 +838,11 @@ export default function SupervisePage() {
       });
       const result = await response.json();
       if (!response.ok) {
+        if (result.code === "quota_exhausted") {
+          setCameraError("监督时长已用完，正在结束本次监督。");
+          void finishRef.current();
+          return;
+        }
         setCameraError(result.error ?? "AI识别失败，请稍后重试。");
         analyzeFailureCountRef.current += 1;
         if (analyzeFailureCountRef.current >= 3) {
@@ -992,6 +997,11 @@ export default function SupervisePage() {
       });
       if (!response.ok) {
         const result = await response.json();
+        if (result.code === "quota_exhausted") {
+          setCameraError("监督时长已用完，正在结束本次监督。");
+          void finishRef.current();
+          return;
+        }
         setCameraError(result.error ?? "会话已结束，请重新开始监督。");
       }
     } catch {
@@ -1074,10 +1084,6 @@ export default function SupervisePage() {
           sessionId: activeSupervision.session.id,
           accessCodeId: activeSupervision.accessCode.id,
           ...(finalRecords.length > 0 ? { records: finalRecords } : {}),
-          endTime,
-          durationMinutes,
-          aiCallCount: aiCallCountRef.current,
-          reportLevel: activeSupervision.accessCode.report_level,
           sessionToken: activeSupervision.session.session_token
         })
       });
@@ -1149,6 +1155,25 @@ export default function SupervisePage() {
       setCameraError(error instanceof Error ? error.message : "结束监督失败，请稍后重试。");
     }
   }, [current, playSupervisionCue, releaseWakeLock, router]);
+
+  useEffect(() => {
+    finishRef.current = finish;
+  }, [finish]);
+
+  useEffect(() => {
+    if (!current || finishingRef.current) return;
+    const quotaEndAt =
+      new Date(current.session.start_time).getTime() +
+      current.totalRemainingMinutes * 60_000;
+    const remainingMs = quotaEndAt - Date.now();
+    if (remainingMs <= 0) {
+      void finishRef.current();
+      return;
+    }
+    if (remainingMs > 2_147_000_000) return;
+    const timer = window.setTimeout(() => void finishRef.current(), remainingMs);
+    return () => window.clearTimeout(timer);
+  }, [current]);
 
   useEffect(() => {
     const raw = window.sessionStorage.getItem("current-supervision");
