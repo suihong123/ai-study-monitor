@@ -53,6 +53,26 @@ type AdminLog = {
   access_codes?: { code?: string; plan_type?: string } | null;
 };
 
+type DeviceRebindLog = {
+  id: string;
+  access_code_id?: string | null;
+  access_code: string;
+  old_device_id?: string | null;
+  old_device_name?: string | null;
+  new_device_id?: string | null;
+  new_device_name?: string | null;
+  ip?: string | null;
+  user_agent?: string | null;
+  is_free: boolean;
+  deducted_minutes: number;
+  remaining_minutes: number;
+  free_rebind_count: number;
+  success: boolean;
+  result_code: string;
+  failure_reason?: string | null;
+  created_at: string;
+};
+
 type AdminOverview = {
   dashboard?: Record<string, number>;
   modelConfig?: {
@@ -72,6 +92,13 @@ type AdminOverview = {
   errorLogs?: AdminLog[];
   suspiciousLogs?: AdminLog[];
   adminActions?: AdminLog[];
+  deviceRebindLogs?: DeviceRebindLog[];
+  rebindConfig?: {
+    rebindCostMinutes: number;
+    rebindCooldownHours: number;
+    updatedAt: string | null;
+    source: "database" | "default";
+  };
   costByAccessCode?: Array<{
     accessCode: string;
     planType: string;
@@ -110,7 +137,15 @@ type AdminOverview = {
   } | null;
 };
 
-type AdminSectionKey = "overview" | "access-codes" | "sessions" | "logs" | "costs" | "model" | "actions";
+type AdminSectionKey =
+  | "overview"
+  | "access-codes"
+  | "sessions"
+  | "rebind"
+  | "logs"
+  | "costs"
+  | "model"
+  | "actions";
 
 const planLabels: Record<PlanType, string> = {
   trial: "2小时体验版",
@@ -150,6 +185,7 @@ const adminSections: Array<{ key: AdminSectionKey; title: string; description: s
   { key: "overview", title: "总览", description: "今日用量、成本和异常概览" },
   { key: "access-codes", title: "访问码管理", description: "创建、搜索、额度和状态处理" },
   { key: "sessions", title: "监督记录", description: "查看单次监督和识别明细" },
+  { key: "rebind", title: "设备换绑", description: "配置规则并查看换绑历史" },
   { key: "logs", title: "风险与错误", description: "排查授权、风控和接口问题" },
   { key: "costs", title: "成本统计", description: "按访问码查看AI成本" },
   { key: "model", title: "模型配置", description: "切换视觉识别模型和成本参数" },
@@ -178,6 +214,10 @@ export default function AdminPage() {
     estimatedCostPerCall: "0.003",
     notes: ""
   });
+  const [rebindForm, setRebindForm] = useState({
+    rebindCostMinutes: "30",
+    rebindCooldownHours: "24"
+  });
 
   async function loadAdmin(adminPassword = password, sessionId = selectedSessionId) {
     if (!adminPassword) return;
@@ -195,6 +235,7 @@ export default function AdminPage() {
       }
       setOverview(result);
       syncModelForm(result.modelConfig);
+      syncRebindForm(result.rebindConfig);
     } finally {
       setLoading(false);
     }
@@ -240,6 +281,7 @@ export default function AdminPage() {
       setIsVerified(true);
       setOverview(result);
       syncModelForm(result.modelConfig);
+      syncRebindForm(result.rebindConfig);
     } finally {
       setLoading(false);
     }
@@ -254,6 +296,44 @@ export default function AdminPage() {
       estimatedCostPerCall: String(config.estimatedCostPerCall),
       notes: config.notes ?? ""
     });
+  }
+
+  function syncRebindForm(config?: AdminOverview["rebindConfig"]) {
+    if (!config) return;
+    setRebindForm({
+      rebindCostMinutes: String(config.rebindCostMinutes),
+      rebindCooldownHours: String(config.rebindCooldownHours)
+    });
+  }
+
+  async function updateRebindConfig(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setLoading(true);
+    setMessage("");
+    try {
+      const response = await fetch("/api/admin/rebind-config", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-admin-password": password
+        },
+        body: JSON.stringify({
+          rebindCostMinutes: Number(rebindForm.rebindCostMinutes),
+          rebindCooldownHours: Number(rebindForm.rebindCooldownHours)
+        })
+      });
+      const result = await response.json();
+      if (!response.ok) {
+        setMessage(response.status === 401 ? "验证失败" : result.error ?? "保存换绑配置失败");
+        return;
+      }
+      setMessage("设备换绑规则已更新");
+      setOverview((current) => ({ ...current, rebindConfig: result.rebindConfig }));
+      syncRebindForm(result.rebindConfig);
+      await loadAdmin();
+    } finally {
+      setLoading(false);
+    }
   }
 
   async function updateModelConfig(event: FormEvent<HTMLFormElement>) {
@@ -714,6 +794,13 @@ export default function AdminPage() {
                                 <td colSpan={8} className="p-4">
                                   <div className="grid gap-3 md:grid-cols-3">
                                     <InfoItem label="设备ID" value={item.device_id ?? "未绑定"} />
+                                    <InfoItem label="当前绑定设备" value={item.current_device_name ?? "历史设备信息未记录"} />
+                                    <InfoItem label="当前设备型号" value={item.current_device_model ?? "未记录"} />
+                                    <InfoItem label="当前平台" value={item.current_device_platform ?? "未记录"} />
+                                    <InfoItem label="绑定时间" value={formatDate(item.device_bound_at)} />
+                                    <InfoItem label="剩余免费换绑" value={`${item.free_rebind_count ?? 3}次`} />
+                                    <InfoItem label="累计成功换绑" value={`${item.rebind_total ?? 0}次`} />
+                                    <InfoItem label="最近换绑时间" value={formatDate(item.last_rebind_at)} />
                                     <InfoItem label="总额度" value={`已用${item.used_minutes} / 剩余${Math.max(item.total_minutes - item.used_minutes, 0)}分钟`} />
                                     <InfoItem label="基础识别频率" value={`${item.base_interval_seconds}秒`} />
                                     <InfoItem label="最快识别频率" value={`${item.min_interval_seconds}秒`} />
@@ -840,6 +927,128 @@ export default function AdminPage() {
                   </div>
                 </Section>
               )}
+            </>
+          )}
+
+          {activeSection === "rebind" && (
+            <>
+              <Section title="设备换绑规则">
+                <form onSubmit={updateRebindConfig} className="grid gap-3 md:grid-cols-2">
+                  <div className="rounded-md bg-panel p-3 text-sm leading-6 text-muted md:col-span-2">
+                    <div className="font-semibold text-ink">
+                      当前规则：前3次真实换绑免费，之后每次扣除
+                      {overview.rebindConfig?.rebindCostMinutes ?? 30}分钟；成功换绑后冷却
+                      {overview.rebindConfig?.rebindCooldownHours ?? 24}小时。
+                    </div>
+                    <div>
+                      配置来源：
+                      {overview.rebindConfig?.source === "database" ? "后台配置" : "系统默认值"}
+                      {overview.rebindConfig?.updatedAt
+                        ? ` / 更新时间：${formatDate(overview.rebindConfig.updatedAt)}`
+                        : ""}
+                    </div>
+                    <div>修改后立即生效，无需重新发布。免费次数仍按每个访问码单独计算。</div>
+                  </div>
+                  <label className="text-sm font-medium">
+                    免费次数用完后扣除分钟
+                    <input
+                      type="number"
+                      min={1}
+                      step={1}
+                      value={rebindForm.rebindCostMinutes}
+                      onChange={(event) =>
+                        setRebindForm((current) => ({
+                          ...current,
+                          rebindCostMinutes: event.target.value
+                        }))
+                      }
+                      className="mt-1 h-11 w-full rounded-md border border-line px-3 outline-none focus:border-brand"
+                    />
+                  </label>
+                  <label className="text-sm font-medium">
+                    成功换绑冷却小时
+                    <input
+                      type="number"
+                      min={0}
+                      step={1}
+                      value={rebindForm.rebindCooldownHours}
+                      onChange={(event) =>
+                        setRebindForm((current) => ({
+                          ...current,
+                          rebindCooldownHours: event.target.value
+                        }))
+                      }
+                      className="mt-1 h-11 w-full rounded-md border border-line px-3 outline-none focus:border-brand"
+                    />
+                  </label>
+                  <button
+                    disabled={loading}
+                    className="h-11 rounded-md bg-brand px-4 font-semibold text-white disabled:opacity-60 md:col-span-2"
+                  >
+                    保存换绑规则
+                  </button>
+                </form>
+              </Section>
+
+              <Section title="换绑历史">
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[1300px] border-collapse text-left text-sm">
+                    <thead className="bg-panel text-muted">
+                      <tr>
+                        <th className="p-3">时间</th>
+                        <th className="p-3">访问码</th>
+                        <th className="p-3">旧设备</th>
+                        <th className="p-3">新设备</th>
+                        <th className="p-3">IP / UA</th>
+                        <th className="p-3">方式</th>
+                        <th className="p-3">扣除</th>
+                        <th className="p-3">剩余监督</th>
+                        <th className="p-3">结果</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(overview.deviceRebindLogs ?? []).map((item) => (
+                        <tr key={item.id} className="border-t border-line align-top">
+                          <td className="p-3">{formatDate(item.created_at)}</td>
+                          <td className="p-3 font-semibold">{item.access_code}</td>
+                          <td className="max-w-[190px] break-all p-3">
+                            {item.old_device_name ?? item.old_device_id ?? "未绑定"}
+                          </td>
+                          <td className="max-w-[190px] break-all p-3">
+                            {item.new_device_name ?? item.new_device_id ?? "-"}
+                          </td>
+                          <td className="max-w-[280px] break-all p-3 text-xs text-muted">
+                            {item.ip ?? "-"}
+                            <br />
+                            {item.user_agent ?? "-"}
+                          </td>
+                          <td className="p-3">{item.is_free ? "免费" : "时长兑换"}</td>
+                          <td className="p-3">{item.deducted_minutes}分钟</td>
+                          <td className="p-3">{item.remaining_minutes}分钟</td>
+                          <td className="p-3">
+                            <span
+                              className={`rounded-md px-2 py-1 text-xs font-semibold ${
+                                item.success
+                                  ? "bg-emerald-50 text-brand"
+                                  : "bg-red-50 text-alert"
+                              }`}
+                            >
+                              {item.success ? "成功" : "失败"}
+                            </span>
+                            <div className="mt-1 text-xs text-muted">
+                              {item.result_code}
+                              {item.failure_reason ? ` / ${item.failure_reason}` : ""}
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {(overview.deviceRebindLogs ?? []).length === 0 && (
+                    <div className="p-4 text-sm text-muted">暂无换绑记录</div>
+                  )}
+                </div>
+              </Section>
             </>
           )}
 

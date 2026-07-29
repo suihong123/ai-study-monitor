@@ -2,16 +2,27 @@
 
 import { FormEvent, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { getDeviceId } from "@/lib/device";
+import { getDeviceInfo, getDeviceRebindRequestId } from "@/lib/device";
 import { privacyNoticeText, privacyNoticeVersion } from "@/lib/privacy";
 import { loadReportHistory, reportUrl, saveReportHistory, type ReportHistoryEntry } from "@/lib/report-history";
 import { appVersion } from "@/lib/version";
-import type { AccessCode, StudySession } from "@/types";
+import type {
+  AccessCode,
+  DeviceInfo,
+  DeviceRebindRequired,
+  StudySession
+} from "@/types";
 
 type CurrentSupervision = {
   accessCode: AccessCode;
   session: StudySession;
   totalRemainingMinutes: number;
+};
+
+type PendingDeviceRebind = {
+  deviceInfo: DeviceInfo;
+  details: DeviceRebindRequired;
+  idempotencyKey: string;
 };
 
 export default function HomePage() {
@@ -23,6 +34,8 @@ export default function HomePage() {
   const [reportHistory, setReportHistory] = useState<ReportHistoryEntry[]>([]);
   const [recoverableSupervision, setRecoverableSupervision] =
     useState<CurrentSupervision | null>(null);
+  const [pendingDeviceRebind, setPendingDeviceRebind] =
+    useState<PendingDeviceRebind | null>(null);
 
   useEffect(() => {
     setReportHistory(loadReportHistory());
@@ -33,42 +46,100 @@ export default function HomePage() {
     router.push("/supervise");
   }
 
+  async function validateAndEnter(deviceInfo: DeviceInfo) {
+    const response = await fetch("/api/access-code", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "validate",
+        code,
+        ...deviceInfo,
+        privacyAcknowledged,
+        privacyNoticeVersion
+      })
+    });
+    const result = await response.json();
+
+    if (!response.ok) {
+      if (result.code === "device_rebind_required" && result.rebindRequired) {
+        setPendingDeviceRebind({
+          deviceInfo,
+          details: result.rebindRequired,
+          idempotencyKey: getDeviceRebindRequestId()
+        });
+        return;
+      }
+      setError(result.error ?? "访问码验证失败");
+      return;
+    }
+
+    const supervision = {
+      accessCode: result.accessCode,
+      session: result.session,
+      totalRemainingMinutes: result.totalRemainingMinutes
+    };
+
+    if (result.recoverable) {
+      setRecoverableSupervision(supervision);
+      return;
+    }
+
+    enterSupervision(supervision);
+  }
+
   async function start(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError("");
     setLoading(true);
 
     try {
-      const response = await fetch("/api/access-code", {
+      await validateAndEnter(getDeviceInfo());
+    } catch {
+      setError("网络异常，请稍后重试");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function confirmDeviceRebind() {
+    if (!pendingDeviceRebind) return;
+    setError("");
+    setLoading(true);
+
+    try {
+      const response = await fetch("/api/device/rebind", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          action: "validate",
           code,
-          deviceId: getDeviceId(),
-          privacyAcknowledged,
-          privacyNoticeVersion
+          ...pendingDeviceRebind.deviceInfo,
+          idempotencyKey: pendingDeviceRebind.idempotencyKey
         })
       });
       const result = await response.json();
 
       if (!response.ok) {
-        setError(result.error ?? "访问码验证失败");
+        if (result.code === "cooldown_active") {
+          setPendingDeviceRebind((current) =>
+            current
+              ? {
+                  ...current,
+                  details: {
+                    ...current.details,
+                    cooldownRemainingSeconds: result.cooldownRemainingSeconds ?? 1,
+                    nextRebindAt: result.nextRebindAt ?? null
+                  }
+                }
+              : current
+          );
+        }
+        setError(result.error ?? "设备更换失败，请稍后再试");
         return;
       }
 
-      const supervision = {
-        accessCode: result.accessCode,
-        session: result.session,
-        totalRemainingMinutes: result.totalRemainingMinutes
-      };
-
-      if (result.recoverable) {
-        setRecoverableSupervision(supervision);
-        return;
-      }
-
-      enterSupervision(supervision);
+      const deviceInfo = pendingDeviceRebind.deviceInfo;
+      setPendingDeviceRebind(null);
+      await validateAndEnter(deviceInfo);
     } catch {
       setError("网络异常，请稍后重试");
     } finally {
@@ -252,6 +323,80 @@ export default function HomePage() {
           </div>
         </div>
       )}
+
+      {pendingDeviceRebind && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-md rounded-md bg-white p-5 shadow-lg">
+            <h2 className="text-xl font-semibold">检测到新的设备</h2>
+            {pendingDeviceRebind.details.cooldownRemainingSeconds > 0 ? (
+              <>
+                <p className="mt-3 text-sm leading-6 text-muted">
+                  为了保障访问码安全，本访问码刚刚完成过设备更换。
+                </p>
+                <p className="mt-2 rounded-md bg-panel p-3 text-sm font-medium text-ink">
+                  请在 {formatCooldown(pendingDeviceRebind.details.cooldownRemainingSeconds)} 后再次尝试。
+                </p>
+              </>
+            ) : (
+              <>
+                <p className="mt-3 text-sm leading-6 text-muted">
+                  是否将访问码绑定到当前设备？
+                </p>
+                {pendingDeviceRebind.details.isFree ? (
+                  <div className="mt-3 rounded-md bg-emerald-50 p-3 text-sm leading-6 text-ink">
+                    本次不会扣除监督时长。
+                    <br />
+                    剩余免费换绑：{pendingDeviceRebind.details.freeRebindCount} 次
+                  </div>
+                ) : (
+                  <div className="mt-3 rounded-md bg-amber-50 p-3 text-sm leading-6 text-ink">
+                    免费换绑次数已使用完。
+                    <br />
+                    本次将扣除 {pendingDeviceRebind.details.costMinutes} 分钟监督时长。
+                  </div>
+                )}
+              </>
+            )}
+            {error && <p className="mt-3 text-sm text-alert">{error}</p>}
+            <div className="mt-5 flex flex-col gap-2 sm:flex-row">
+              <button
+                type="button"
+                disabled={loading}
+                onClick={() => {
+                  setPendingDeviceRebind(null);
+                  setError("");
+                }}
+                className="h-11 rounded-md border border-line px-4 font-medium disabled:opacity-60"
+              >
+                {pendingDeviceRebind.details.cooldownRemainingSeconds > 0 ? "知道了" : "取消"}
+              </button>
+              {pendingDeviceRebind.details.cooldownRemainingSeconds <= 0 && (
+                <button
+                  type="button"
+                  disabled={
+                    loading ||
+                    (!pendingDeviceRebind.details.isFree &&
+                      pendingDeviceRebind.details.remainingMinutes <
+                        pendingDeviceRebind.details.costMinutes)
+                  }
+                  onClick={() => void confirmDeviceRebind()}
+                  className="h-11 rounded-md bg-brand px-4 font-semibold text-white disabled:opacity-60"
+                >
+                  {loading ? "正在更换" : "确认换绑"}
+                </button>
+              )}
+            </div>
+            {!pendingDeviceRebind.details.isFree &&
+              pendingDeviceRebind.details.remainingMinutes <
+                pendingDeviceRebind.details.costMinutes && (
+                <p className="mt-3 text-sm text-alert">
+                  剩余监督时长不足 {pendingDeviceRebind.details.costMinutes}
+                  分钟，无法完成设备更换。
+                </p>
+              )}
+          </div>
+        </div>
+      )}
     </main>
   );
 }
@@ -263,4 +408,12 @@ function formatReportDate(value: string) {
     hour: "2-digit",
     minute: "2-digit"
   });
+}
+
+function formatCooldown(seconds: number) {
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.ceil((seconds % 3600) / 60);
+  if (hours <= 0) return `${Math.max(1, minutes)}分钟`;
+  if (minutes <= 0) return `${hours}小时`;
+  return `${hours}小时${minutes}分钟`;
 }

@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { canUseAccessCode, statusMessages } from "@/lib/access-code-status";
 import { isAdminRequest } from "@/lib/admin";
+import {
+  calculateRebindCooldown,
+  getDeviceRebindConfig
+} from "@/lib/device-rebind-config";
 import { remainingMinutes } from "@/lib/entitlements";
 import { defaultPlanConfigs, planTotalMinutes } from "@/lib/plans";
 import { privacyNoticeVersion } from "@/lib/privacy";
@@ -59,6 +63,9 @@ export async function POST(request: NextRequest) {
       request,
       body.code,
       body.deviceId,
+      body.deviceName,
+      body.deviceModel,
+      body.devicePlatform,
       body.privacyAcknowledged,
       body.privacyNoticeVersion
     );
@@ -77,7 +84,28 @@ export async function POST(request: NextRequest) {
   }
 
   if (action === "unbind") {
-    return adminUpdateAccessCode(request, body.id, { device_id: null }, "unbind_device", body.reason);
+    const response = await adminUpdateAccessCode(
+      request,
+      body.id,
+      {
+        device_id: null,
+        current_device_name: null,
+        current_device_model: null,
+        current_device_platform: null,
+        device_bound_at: null
+      },
+      "unbind_device",
+      body.reason
+    );
+    if (response.status < 400 && body.id) {
+      await supabaseAdmin
+        .from("sessions")
+        .update({ session_token: generateSessionToken() })
+        .eq("access_code_id", body.id)
+        .eq("status", "active")
+        .is("end_time", null);
+    }
+    return response;
   }
 
   if (action === "set-status") {
@@ -133,6 +161,9 @@ async function handleValidateCode(
   request: NextRequest,
   code: string,
   deviceId: string,
+  deviceName: string,
+  deviceModel: string,
+  devicePlatform: string,
   privacyAcknowledged: boolean,
   submittedPrivacyNoticeVersion?: string
 ) {
@@ -209,20 +240,6 @@ async function handleValidateCode(
       { status: 403 }
     );
   }
-  if (data.device_id && data.device_id !== deviceId) {
-    await logSuspicious({
-      accessCodeId: data.id,
-      ip,
-      userAgent,
-      eventType: "多设备尝试",
-      message: "访问码被其他设备尝试使用"
-    });
-    return NextResponse.json(
-      { error: "该访问码已绑定其他设备，请联系客服解绑。" },
-      { status: 403 }
-    );
-  }
-
   await settleExpiredSessionsForAccessCode(data.id);
 
   const { data: refreshedCode, error: refreshError } = await supabaseAdmin!
@@ -240,7 +257,7 @@ async function handleValidateCode(
     return NextResponse.json({ error: refreshError.message }, { status: 500 });
   }
 
-  const normalizedCode = refreshedCode;
+  let normalizedCode = refreshedCode;
 
   const totalRemainingMinutes = remainingMinutes(
     normalizedCode.total_minutes,
@@ -261,14 +278,58 @@ async function handleValidateCode(
     );
   }
 
+  if (normalizedCode.device_id && normalizedCode.device_id !== deviceId) {
+    const config = await getDeviceRebindConfig();
+    const cooldown = calculateRebindCooldown({
+      lastRebindAt: normalizedCode.last_rebind_at,
+      cooldownHours: config.rebindCooldownHours
+    });
+    const freeRebindCount = Math.max(0, Number(normalizedCode.free_rebind_count ?? 0));
+
+    await logSuspicious({
+      accessCodeId: normalizedCode.id,
+      ip,
+      userAgent,
+      eventType: "新设备检测",
+      message: "检测到访问码正在从另一台设备尝试进入"
+    });
+
+    return NextResponse.json(
+      {
+        error: "检测到新的设备",
+        code: "device_rebind_required",
+        rebindRequired: {
+          freeRebindCount,
+          remainingMinutes: totalRemainingMinutes,
+          costMinutes: config.rebindCostMinutes,
+          cooldownHours: config.rebindCooldownHours,
+          cooldownRemainingSeconds: cooldown.cooldownRemainingSeconds,
+          nextRebindAt: cooldown.nextRebindAt,
+          isFree: freeRebindCount > 0
+        }
+      },
+      { status: 409 }
+    );
+  }
+
   const updates: Record<string, unknown> = {};
-  if (!data.device_id) updates.device_id = deviceId;
+  if (!normalizedCode.device_id) {
+    updates.device_id = deviceId;
+    updates.current_device_name = String(deviceName ?? "").trim().slice(0, 120) || null;
+    updates.current_device_model = String(deviceModel ?? "").trim().slice(0, 120) || null;
+    updates.current_device_platform = String(devicePlatform ?? "").trim().slice(0, 20) || "Other";
+    updates.device_bound_at = new Date().toISOString();
+    updates.updated_at = new Date().toISOString();
+  }
 
   if (Object.keys(updates).length > 0) {
-    const { error: updateError } = await supabaseAdmin!
+    const { data: boundCode, error: updateError } = await supabaseAdmin!
       .from("access_codes")
       .update(updates)
-      .eq("id", data.id);
+      .eq("id", data.id)
+      .is("device_id", null)
+      .select("*")
+      .maybeSingle();
     if (updateError) {
       await logError({
         accessCodeId: data.id,
@@ -277,7 +338,45 @@ async function handleValidateCode(
       });
       return NextResponse.json({ error: updateError.message }, { status: 500 });
     }
-    normalizedCode.device_id = normalizedCode.device_id ?? deviceId;
+    if (boundCode) {
+      normalizedCode = boundCode;
+    } else {
+      const { data: concurrentlyBoundCode, error: reloadError } = await supabaseAdmin!
+        .from("access_codes")
+        .select("*")
+        .eq("id", data.id)
+        .single();
+      if (reloadError) {
+        return NextResponse.json({ error: reloadError.message }, { status: 500 });
+      }
+      if (concurrentlyBoundCode.device_id !== deviceId) {
+        const config = await getDeviceRebindConfig();
+        const cooldown = calculateRebindCooldown({
+          lastRebindAt: concurrentlyBoundCode.last_rebind_at,
+          cooldownHours: config.rebindCooldownHours
+        });
+        return NextResponse.json(
+          {
+            error: "检测到新的设备",
+            code: "device_rebind_required",
+            rebindRequired: {
+              freeRebindCount: Math.max(
+                0,
+                Number(concurrentlyBoundCode.free_rebind_count ?? 0)
+              ),
+              remainingMinutes: totalRemainingMinutes,
+              costMinutes: config.rebindCostMinutes,
+              cooldownHours: config.rebindCooldownHours,
+              cooldownRemainingSeconds: cooldown.cooldownRemainingSeconds,
+              nextRebindAt: cooldown.nextRebindAt,
+              isFree: Number(concurrentlyBoundCode.free_rebind_count ?? 0) > 0
+            }
+          },
+          { status: 409 }
+        );
+      }
+      normalizedCode = concurrentlyBoundCode;
+    }
   }
 
   const activeSince = new Date(Date.now() - sessionTimeoutSeconds * 1000).toISOString();

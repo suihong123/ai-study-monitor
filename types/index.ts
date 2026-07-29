@@ -47,12 +47,68 @@ export type AccessCode = {
   base_interval_seconds: number;
   min_interval_seconds: number;
   device_id: string | null;
+  free_rebind_count: number;
+  last_rebind_at: string | null;
+  rebind_total: number;
+  current_device_name: string | null;
+  current_device_model: string | null;
+  current_device_platform: string | null;
+  device_bound_at: string | null;
   status: AccessCodeStatus;
   freeze_reason: string | null;
   admin_notes: string | null;
   created_at: string;
   updated_at: string | null;
   expires_at: string | null;
+};
+
+export type DevicePlatform = "Android" | "iOS" | "Windows" | "Mac" | "Other";
+
+export type DeviceInfo = {
+  deviceId: string;
+  deviceName: string;
+  deviceModel: string;
+  devicePlatform: DevicePlatform;
+};
+
+export type DeviceRebindConfig = {
+  rebindCostMinutes: number;
+  rebindCooldownHours: number;
+  updatedAt: string | null;
+  source: "database" | "default";
+};
+
+export type DeviceRebindRequired = {
+  freeRebindCount: number;
+  remainingMinutes: number;
+  costMinutes: number;
+  cooldownHours: number;
+  cooldownRemainingSeconds: number;
+  nextRebindAt: string | null;
+  isFree: boolean;
+};
+
+export type DeviceRebindResult = {
+  success: boolean;
+  resultCode:
+    | "invalid_request"
+    | "access_code_not_found"
+    | "access_code_unavailable"
+    | "first_bound"
+    | "already_bound"
+    | "cooldown_active"
+    | "insufficient_minutes"
+    | "rebound"
+    | "server_error";
+  message: string;
+  freeRebindCount: number;
+  remainingMinutes: number;
+  cooldownRemainingSeconds: number;
+  nextRebindAt?: string | null;
+  costMinutes: number;
+  deductedMinutes: number;
+  isFree?: boolean;
+  replayed?: boolean;
 };
 
 export type PlanConfig = {

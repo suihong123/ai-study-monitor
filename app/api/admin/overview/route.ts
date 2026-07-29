@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isAdminRequest } from "@/lib/admin";
+import { getDeviceRebindConfig } from "@/lib/device-rebind-config";
 import { getActiveVisionModelConfig } from "@/lib/model-config";
 import { getTodayKey } from "@/lib/plans";
 import { settleExpiredSessions } from "@/lib/session-settlement";
@@ -28,6 +29,7 @@ export async function GET(request: NextRequest) {
   const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
   const sessionId = request.nextUrl.searchParams.get("sessionId");
   const modelConfig = await getActiveVisionModelConfig();
+  const rebindConfig = await getDeviceRebindConfig();
 
   const [
     accessCodes,
@@ -40,6 +42,7 @@ export async function GET(request: NextRequest) {
     suspiciousLogs,
     todaySuspiciousLogs,
     adminActions,
+    deviceRebindLogs,
     qwenAllLogs,
     qwenSevenDayLogs
   ] = await Promise.all([
@@ -76,6 +79,11 @@ export async function GET(request: NextRequest) {
       .order("created_at", { ascending: false })
       .limit(200),
     supabaseAdmin
+      .from("device_rebind_logs")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .limit(200),
+    supabaseAdmin
       .from("ai_call_logs")
       .select("estimated_cost")
       .like("model_type", "vision_qwen%"),
@@ -97,6 +105,7 @@ export async function GET(request: NextRequest) {
     suspiciousLogs,
     todaySuspiciousLogs,
     adminActions,
+    deviceRebindLogs,
     qwenAllLogs,
     qwenSevenDayLogs
   ].find((result) => result.error);
@@ -280,7 +289,9 @@ export async function GET(request: NextRequest) {
     errorLogs: errorLogs.data ?? [],
     suspiciousLogs: suspiciousLogs.data ?? [],
     adminActions: adminActions.data ?? [],
+    deviceRebindLogs: deviceRebindLogs.data ?? [],
     modelConfig,
+    rebindConfig,
     costByAccessCode: Object.values(costByAccessCode),
     sessionDetail
   });
