@@ -9,6 +9,13 @@ import { Timer } from "@/components/Timer";
 import { reportUrl, saveReportHistory } from "@/lib/report-history";
 import { calculateLearningInsights, calculateStats } from "@/lib/stats";
 import {
+  isAbortError,
+  replaceAbortController,
+  SupervisionRequestLifecycle,
+  type SupervisionRequestSnapshot,
+  type SupervisionSessionIdentity
+} from "@/lib/supervision-request-lifecycle";
+import {
   intensityLabels,
   type AccessCode,
   type GeneratedReport,
@@ -26,6 +33,15 @@ type CurrentSupervision = {
   session: StudySession;
   totalRemainingMinutes: number;
 };
+
+function supervisionSessionIdentity(
+  supervision: CurrentSupervision
+): SupervisionSessionIdentity {
+  return {
+    sessionId: supervision.session.id,
+    sessionToken: supervision.session.session_token
+  };
+}
 
 type LastReminder = {
   type: ReminderType;
@@ -161,6 +177,15 @@ export default function SupervisePage() {
   const analyzingRef = useRef(false);
   const analyzeRef = useRef<() => Promise<void>>(async () => {});
   const finishRef = useRef<() => Promise<void>>(async () => {});
+  const stopForEnvironmentReactivationRef = useRef<() => void>(() => {});
+  const environmentInvalidatedRef = useRef(false);
+  const pageMountedRef = useRef(true);
+  const analyzeAbortControllerRef = useRef<AbortController | null>(null);
+  const heartbeatAbortControllerRef = useRef<AbortController | null>(null);
+  const correctionAbortControllerRef = useRef<AbortController | null>(null);
+  const reportAbortControllerRef = useRef<AbortController | null>(null);
+  const analyzeLifecycleRef = useRef(new SupervisionRequestLifecycle());
+  const heartbeatLifecycleRef = useRef(new SupervisionRequestLifecycle());
   const intensityUntilRef = useRef(0);
   const abnormalLockRef = useRef(false);
   const aiCallCountRef = useRef(0);
@@ -201,6 +226,42 @@ export default function SupervisePage() {
   const [, setLastAudioResult] = useState("暂无声音播放记录");
   const [completedReport, setCompletedReport] = useState<GeneratedReport | null>(null);
   const [completedReportUrl, setCompletedReportUrl] = useState("");
+
+  const cancelMonitoringRequests = useCallback((invalidate = true) => {
+    if (invalidate) {
+      analyzeLifecycleRef.current.invalidate();
+      heartbeatLifecycleRef.current.invalidate();
+    }
+    analyzeAbortControllerRef.current?.abort();
+    heartbeatAbortControllerRef.current?.abort();
+    correctionAbortControllerRef.current?.abort();
+    analyzeAbortControllerRef.current = null;
+    heartbeatAbortControllerRef.current = null;
+    correctionAbortControllerRef.current = null;
+    analyzingRef.current = false;
+    if (pageMountedRef.current) {
+      setAnalyzing(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    pageMountedRef.current = true;
+    const analyzeLifecycle = analyzeLifecycleRef.current;
+    const heartbeatLifecycle = heartbeatLifecycleRef.current;
+    return () => {
+      pageMountedRef.current = false;
+      analyzeLifecycle.invalidate();
+      heartbeatLifecycle.invalidate();
+      analyzeAbortControllerRef.current?.abort();
+      heartbeatAbortControllerRef.current?.abort();
+      correctionAbortControllerRef.current?.abort();
+      reportAbortControllerRef.current?.abort();
+      analyzeAbortControllerRef.current = null;
+      heartbeatAbortControllerRef.current = null;
+      correctionAbortControllerRef.current = null;
+      reportAbortControllerRef.current = null;
+    };
+  }, []);
 
   const elapsedMinutes = Math.floor(elapsedSeconds / 60);
   const totalRemainingMinutes = Math.max(
@@ -722,7 +783,12 @@ export default function SupervisePage() {
   }, [applyInterval, current, defaultIntervalForNow, highIntervalForCurrentPlan]);
 
   const triggerReminder = useCallback(
-    async (reminderType: ReminderType, contextRecords = recordsRef.current) => {
+    async (
+      reminderType: ReminderType,
+      contextRecords = recordsRef.current,
+      isStillCurrent: () => boolean = () => true
+    ) => {
+      if (!isStillCurrent()) return null;
       const lastReminderAt = lastReminderAtRef.current[reminderType] ?? 0;
       const cooldownMs = dynamicReminderCooldownMs(reminderType, contextRecords);
       if (
@@ -741,7 +807,7 @@ export default function SupervisePage() {
       reminderPlayingRef.current[reminderType] = true;
       try {
         const played = await playReminderAudio(reminderType, text, reminderCount > 0);
-        if (!played) return null;
+        if (!played || !isStillCurrent()) return null;
 
         const timestamp = Date.now();
         lastReminderAtRef.current[reminderType] = timestamp;
@@ -761,7 +827,11 @@ export default function SupervisePage() {
   );
 
   const maybeRemind = useCallback(
-    async (nextRecords: StudyRecord[]) => {
+    async (
+      nextRecords: StudyRecord[],
+      isStillCurrent: () => boolean = () => true
+    ) => {
+      if (!isStillCurrent()) return null;
       const latest = nextRecords[nextRecords.length - 1];
       if (!latest) return null;
 
@@ -789,10 +859,14 @@ export default function SupervisePage() {
         setAwayCanRemind(reminderReady);
 
         if (!reminderReady) return null;
-        return await triggerReminder("away", nextRecords);
+        return await triggerReminder("away", nextRecords, isStillCurrent);
       }
 
-      return await triggerReminder(latestReminderType, nextRecords);
+      return await triggerReminder(
+        latestReminderType,
+        nextRecords,
+        isStillCurrent
+      );
     },
     [triggerReminder]
   );
@@ -813,9 +887,22 @@ export default function SupervisePage() {
   const analyze = useCallback(async () => {
     if (!current || !placementConfirmed || finishingRef.current || document.hidden || !navigator.onLine) return;
     const image = captureImage();
-    if (!image || analyzingRef.current) return;
+    if (!image) return;
     const activeSupervision = current;
+    const activeSession = supervisionSessionIdentity(activeSupervision);
     const currentFrequencyReason = frequencyReasonRef.current;
+    const controller = replaceAbortController(
+      analyzeAbortControllerRef.current
+    );
+    analyzeAbortControllerRef.current = controller;
+    const requestSnapshot: SupervisionRequestSnapshot =
+      analyzeLifecycleRef.current.begin(activeSession);
+    const isStillCurrent = () =>
+      !controller.signal.aborted &&
+      !finishingRef.current &&
+      !environmentInvalidatedRef.current &&
+      pageMountedRef.current &&
+      analyzeLifecycleRef.current.isCurrent(requestSnapshot);
 
     analyzingRef.current = true;
     setAnalyzing(true);
@@ -831,10 +918,19 @@ export default function SupervisePage() {
           currentFrequencySeconds: currentIntervalSeconds,
           frequencyBoostedByAbnormal: currentFrequencyReason === "abnormal",
           frequencyLoweredByFocus: currentFrequencyReason === "focused"
-        })
+        }),
+        signal: controller.signal
       });
       const result = await response.json();
+      if (!isStillCurrent()) return;
       if (!response.ok) {
+        if (
+          response.status === 401 ||
+          result.code === "session_reactivated_elsewhere"
+        ) {
+          stopForEnvironmentReactivationRef.current();
+          return;
+        }
         if (result.code === "quota_exhausted") {
           setCameraError("监督时长已用完，正在结束本次监督。");
           void finishRef.current();
@@ -875,7 +971,8 @@ export default function SupervisePage() {
           error_message: null
         }
       ];
-      const reminder = await maybeRemind(draftRecords);
+      const reminder = await maybeRemind(draftRecords, isStillCurrent);
+      if (!isStillCurrent()) return;
       const nextRecords = draftRecords.map((record, index) =>
         index === draftRecords.length - 1
           ? {
@@ -894,7 +991,14 @@ export default function SupervisePage() {
       setLearningState(nextLearningState);
       aiCallCountRef.current += 1;
       updateDynamicInterval(nextRecords);
-    } catch {
+    } catch (error) {
+      if (
+        isAbortError(error) ||
+        controller.signal.aborted ||
+        !isStillCurrent()
+      ) {
+        return;
+      }
       setCameraError("AI识别失败，请检查网络后继续。");
       analyzeFailureCountRef.current += 1;
       if (analyzeFailureCountRef.current >= 3) {
@@ -903,8 +1007,13 @@ export default function SupervisePage() {
         applyInterval(defaultIntervalForNow(), "normal");
       }
     } finally {
-      analyzingRef.current = false;
-      setAnalyzing(false);
+      if (analyzeAbortControllerRef.current === controller) {
+        analyzeAbortControllerRef.current = null;
+        analyzingRef.current = false;
+        if (pageMountedRef.current) {
+          setAnalyzing(false);
+        }
+      }
     }
   }, [
     applyInterval,
@@ -944,17 +1053,32 @@ export default function SupervisePage() {
       setPresence(legacyPresenceFromStatus(nextStatus));
       setLearningState(legacyLearningStateFromStatus(nextStatus));
 
-      await fetch("/api/records/correct", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          accessCodeId: current.accessCode.id,
-          sessionId: current.session.id,
-          sessionToken: current.session.session_token,
-          recordId: latest.id,
-          status: nextStatus
-        })
-      });
+      const controller = replaceAbortController(
+        correctionAbortControllerRef.current
+      );
+      correctionAbortControllerRef.current = controller;
+      try {
+        await fetch("/api/records/correct", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            accessCodeId: current.accessCode.id,
+            sessionId: current.session.id,
+            sessionToken: current.session.session_token,
+            recordId: latest.id,
+            status: nextStatus
+          }),
+          signal: controller.signal
+        });
+      } catch (error) {
+        if (!isAbortError(error) && !controller.signal.aborted) {
+          throw error;
+        }
+      } finally {
+        if (correctionAbortControllerRef.current === controller) {
+          correctionAbortControllerRef.current = null;
+        }
+      }
     },
     [current]
   );
@@ -982,6 +1106,19 @@ export default function SupervisePage() {
 
   const sendHeartbeat = useCallback(async () => {
     if (!current || finishingRef.current || !navigator.onLine) return;
+    const activeSession = supervisionSessionIdentity(current);
+    const controller = replaceAbortController(
+      heartbeatAbortControllerRef.current
+    );
+    heartbeatAbortControllerRef.current = controller;
+    const requestSnapshot = heartbeatLifecycleRef.current.begin(activeSession);
+    const isStillCurrent = () =>
+      !controller.signal.aborted &&
+      !finishingRef.current &&
+      !environmentInvalidatedRef.current &&
+      pageMountedRef.current &&
+      heartbeatLifecycleRef.current.isCurrent(requestSnapshot);
+
     try {
       const response = await fetch("/api/session-heartbeat", {
         method: "POST",
@@ -990,10 +1127,20 @@ export default function SupervisePage() {
           accessCodeId: current.accessCode.id,
           sessionId: current.session.id,
           sessionToken: current.session.session_token
-        })
+        }),
+        signal: controller.signal
       });
+      if (!isStillCurrent()) return;
       if (!response.ok) {
         const result = await response.json();
+        if (!isStillCurrent()) return;
+        if (
+          response.status === 401 ||
+          result.code === "session_reactivated_elsewhere"
+        ) {
+          stopForEnvironmentReactivationRef.current();
+          return;
+        }
         if (result.code === "quota_exhausted") {
           setCameraError("监督时长已用完，正在结束本次监督。");
           void finishRef.current();
@@ -1001,8 +1148,19 @@ export default function SupervisePage() {
         }
         setCameraError(result.error ?? "会话已结束，请重新开始监督。");
       }
-    } catch {
+    } catch (error) {
+      if (
+        isAbortError(error) ||
+        controller.signal.aborted ||
+        !isStillCurrent()
+      ) {
+        return;
+      }
       setCameraError("心跳同步失败，请检查网络。");
+    } finally {
+      if (heartbeatAbortControllerRef.current === controller) {
+        heartbeatAbortControllerRef.current = null;
+      }
     }
   }, [current]);
 
@@ -1060,10 +1218,58 @@ export default function SupervisePage() {
     }
   }, []);
 
+  const stopForEnvironmentReactivation = useCallback(() => {
+    if (environmentInvalidatedRef.current) return;
+    environmentInvalidatedRef.current = true;
+    finishingRef.current = true;
+    cancelMonitoringRequests();
+    reportAbortControllerRef.current?.abort();
+    reportAbortControllerRef.current = null;
+    calibrationAnalyzeTimersRef.current.forEach((timer) =>
+      window.clearTimeout(timer)
+    );
+    calibrationAnalyzeTimersRef.current = [];
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+    localReminderAudioRef.current?.pause();
+    window.speechSynthesis?.cancel();
+    void releaseWakeLock();
+    window.sessionStorage.removeItem("current-supervision");
+    if (current?.session.id) {
+      window.sessionStorage.removeItem(
+        `placement-confirmed-${current.session.id}`
+      );
+      window.sessionStorage.removeItem(`supervision-seen-${current.session.id}`);
+    }
+    window.sessionStorage.setItem(
+      "supervision-stop-notice",
+      "当前访问码已在其他使用环境中重新绑定，本页面的监督已停止。"
+    );
+    setPageActive(false);
+    setCurrent(null);
+    router.replace("/");
+  }, [
+    cancelMonitoringRequests,
+    current?.session.id,
+    releaseWakeLock,
+    router
+  ]);
+
+  useEffect(() => {
+    stopForEnvironmentReactivationRef.current =
+      stopForEnvironmentReactivation;
+  }, [stopForEnvironmentReactivation]);
+
   const finish = useCallback(async () => {
     if (!current || finishingRef.current) return;
     const activeSupervision = current;
+    const activeSession = supervisionSessionIdentity(activeSupervision);
+    let reportController: AbortController | null = null;
     finishingRef.current = true;
+    cancelMonitoringRequests();
     const endTime = new Date().toISOString();
     const finalRecords = recordsRef.current;
     const durationMinutes = Math.max(
@@ -1086,6 +1292,13 @@ export default function SupervisePage() {
       });
       const settlement = await settlementResponse.json();
       if (!settlementResponse.ok) {
+        if (
+          settlementResponse.status === 401 ||
+          settlement.code === "session_reactivated_elsewhere"
+        ) {
+          stopForEnvironmentReactivationRef.current();
+          return;
+        }
         throw new Error(settlement.error ?? "监督结算失败");
       }
 
@@ -1130,28 +1343,69 @@ export default function SupervisePage() {
       const persistentReportUrl = reportUrl(historyEntry);
       setCompletedReportUrl(persistentReportUrl);
 
+      reportController = replaceAbortController(
+        reportAbortControllerRef.current
+      );
+      reportAbortControllerRef.current = reportController;
       const reportResponse = await fetch("/api/report", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           sessionId: activeSupervision.session.id,
           reportToken
-        })
+        }),
+        signal: reportController.signal
       });
+      if (
+        reportController.signal.aborted ||
+        !pageMountedRef.current ||
+        environmentInvalidatedRef.current
+      ) {
+        return;
+      }
       if (!reportResponse.ok) {
         router.push(persistentReportUrl);
         return;
       }
       const report = (await reportResponse.json()) as GeneratedReport;
+      if (
+        reportController.signal.aborted ||
+        !pageMountedRef.current ||
+        environmentInvalidatedRef.current
+      ) {
+        return;
+      }
 
       window.sessionStorage.setItem("latest-report", JSON.stringify(report));
       setCurrent(null);
       setCompletedReport(report);
     } catch (error) {
+      if (
+        isAbortError(error) ||
+        !pageMountedRef.current ||
+        environmentInvalidatedRef.current
+      ) {
+        return;
+      }
       finishingRef.current = false;
+      analyzeLifecycleRef.current.activate(activeSession);
+      heartbeatLifecycleRef.current.activate(activeSession);
       setCameraError(error instanceof Error ? error.message : "结束监督失败，请稍后重试。");
+    } finally {
+      if (
+        reportController &&
+        reportAbortControllerRef.current === reportController
+      ) {
+        reportAbortControllerRef.current = null;
+      }
     }
-  }, [current, playSupervisionCue, releaseWakeLock, router]);
+  }, [
+    cancelMonitoringRequests,
+    current,
+    playSupervisionCue,
+    releaseWakeLock,
+    router
+  ]);
 
   useEffect(() => {
     finishRef.current = finish;
@@ -1175,10 +1429,15 @@ export default function SupervisePage() {
   useEffect(() => {
     const raw = window.sessionStorage.getItem("current-supervision");
     if (!raw) {
+      analyzeLifecycleRef.current.invalidate();
+      heartbeatLifecycleRef.current.invalidate();
       router.replace("/");
       return;
     }
     const parsed = JSON.parse(raw) as CurrentSupervision;
+    const activeSession = supervisionSessionIdentity(parsed);
+    analyzeLifecycleRef.current.activate(activeSession);
+    heartbeatLifecycleRef.current.activate(activeSession);
     setCurrent(parsed);
     startedAtRef.current = new Date(parsed.session.start_time);
     const seenKey = `supervision-seen-${parsed.session.id}`;

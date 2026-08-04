@@ -19,9 +19,25 @@ export default function RootLayout({
 }: Readonly<{
   children: ReactNode;
 }>) {
+  const isStaging = process.env.NEXT_PUBLIC_APP_ENV === "staging";
+  const stagingProjectRef =
+    process.env.NEXT_PUBLIC_EXPECTED_SUPABASE_PROJECT_REF;
+
   return (
     <html lang="zh-CN">
-      <body className="min-h-screen bg-panel text-ink antialiased">{children}</body>
+      <body className="min-h-screen bg-panel text-ink antialiased">
+        {isStaging ? (
+          <div
+            className="bg-amber-100 px-4 py-2 text-center text-sm font-semibold text-amber-900"
+            data-app-environment="staging"
+            data-supabase-project-ref={stagingProjectRef}
+            role="status"
+          >
+            v0.9 测试环境
+          </div>
+        ) : null}
+        {children}
+      </body>
     </html>
   );
 }

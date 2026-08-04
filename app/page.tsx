@@ -29,6 +29,7 @@ export default function HomePage() {
   const router = useRouter();
   const [code, setCode] = useState("");
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
   const [loading, setLoading] = useState(false);
   const [privacyAcknowledged, setPrivacyAcknowledged] = useState(true);
   const [reportHistory, setReportHistory] = useState<ReportHistoryEntry[]>([]);
@@ -36,9 +37,18 @@ export default function HomePage() {
     useState<CurrentSupervision | null>(null);
   const [pendingDeviceRebind, setPendingDeviceRebind] =
     useState<PendingDeviceRebind | null>(null);
+  const [reactivatedDeviceInfo, setReactivatedDeviceInfo] =
+    useState<DeviceInfo | null>(null);
 
   useEffect(() => {
     setReportHistory(loadReportHistory());
+    const supervisionStopNotice = window.sessionStorage.getItem(
+      "supervision-stop-notice"
+    );
+    if (supervisionStopNotice) {
+      setNotice(supervisionStopNotice);
+      window.sessionStorage.removeItem("supervision-stop-notice");
+    }
   }, []);
 
   function enterSupervision(supervision: CurrentSupervision) {
@@ -61,7 +71,7 @@ export default function HomePage() {
     const result = await response.json();
 
     if (!response.ok) {
-      if (result.code === "device_rebind_required" && result.rebindRequired) {
+      if (result.code === "rebind_required" && result.rebindRequired) {
         setPendingDeviceRebind({
           deviceInfo,
           details: result.rebindRequired,
@@ -119,27 +129,35 @@ export default function HomePage() {
       const result = await response.json();
 
       if (!response.ok) {
-        if (result.code === "cooldown_active") {
+        if (
+          result.code === "rate_limited" ||
+          result.code === "window_limit_reached"
+        ) {
           setPendingDeviceRebind((current) =>
             current
               ? {
                   ...current,
                   details: {
                     ...current.details,
-                    cooldownRemainingSeconds: result.cooldownRemainingSeconds ?? 1,
-                    nextRebindAt: result.nextRebindAt ?? null
+                    usedCount:
+                      result.usedCount ?? current.details.usedCount,
+                    nextCount:
+                      result.nextCount ?? current.details.nextCount,
+                    allowed: false,
+                    limitReason: result.code,
+                    nextAvailableAt: result.nextAvailableAt ?? null
                   }
                 }
               : current
           );
         }
-        setError(result.error ?? "设备更换失败，请稍后再试");
+        setError(result.error ?? "重新绑定失败，请稍后再试");
         return;
       }
 
       const deviceInfo = pendingDeviceRebind.deviceInfo;
       setPendingDeviceRebind(null);
-      await validateAndEnter(deviceInfo);
+      setReactivatedDeviceInfo(deviceInfo);
     } catch {
       setError("网络异常，请稍后重试");
     } finally {
@@ -226,6 +244,11 @@ export default function HomePage() {
             required
           />
           {error && <p className="mt-3 text-sm text-alert">{error}</p>}
+          {notice && (
+            <p className="mt-3 rounded-md bg-amber-50 p-3 text-sm leading-6 text-warn">
+              {notice}
+            </p>
+          )}
           <label className="mt-4 flex items-start gap-2 text-sm leading-6 text-muted">
             <input
               type="checkbox"
@@ -243,6 +266,15 @@ export default function HomePage() {
             {loading ? "正在验证" : "开始监督"}
           </button>
         </form>
+
+        <div className="mt-4 rounded-md border border-line bg-white p-4 text-sm leading-6 text-muted">
+          <p className="font-medium text-ink">
+            访问码15天内最多可免费重新绑定10次。
+          </p>
+          <p className="mt-1">
+            更换手机、平板，或切换微信浏览器和系统浏览器时，可能需要重新绑定。
+          </p>
+        </div>
 
         {reportHistory.length > 0 && (
           <section className="mt-4 rounded-md border border-line bg-white p-4">
@@ -327,34 +359,49 @@ export default function HomePage() {
       {pendingDeviceRebind && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
           <div className="w-full max-w-md rounded-md bg-white p-5 shadow-lg">
-            <h2 className="text-xl font-semibold">检测到新的设备</h2>
-            {pendingDeviceRebind.details.cooldownRemainingSeconds > 0 ? (
+            <h2 className="text-xl font-semibold">检测到新的使用环境</h2>
+            {!pendingDeviceRebind.details.allowed ? (
               <>
-                <p className="mt-3 text-sm leading-6 text-muted">
-                  为了保障访问码安全，本访问码刚刚完成过设备更换。
-                </p>
-                <p className="mt-2 rounded-md bg-panel p-3 text-sm font-medium text-ink">
-                  请在 {formatCooldown(pendingDeviceRebind.details.cooldownRemainingSeconds)} 后再次尝试。
-                </p>
-              </>
-            ) : (
-              <>
-                <p className="mt-3 text-sm leading-6 text-muted">
-                  是否将访问码绑定到当前设备？
-                </p>
-                {pendingDeviceRebind.details.isFree ? (
-                  <div className="mt-3 rounded-md bg-emerald-50 p-3 text-sm leading-6 text-ink">
-                    本次不会扣除监督时长。
+                {pendingDeviceRebind.details.limitReason ===
+                "window_limit_reached" ? (
+                  <div className="mt-3 rounded-md bg-amber-50 p-3 text-sm leading-6 text-ink">
+                    最近{pendingDeviceRebind.details.windowDays}
+                    天内重新绑定次数已达到
+                    {pendingDeviceRebind.details.maxCount}次。
                     <br />
-                    剩余免费换绑：{pendingDeviceRebind.details.freeRebindCount} 次
+                    下一次可重新绑定时间：
+                    <br />
+                    {formatDateTime(pendingDeviceRebind.details.nextAvailableAt)}
+                    <br />
+                    如需立即处理，请联系管理员。
                   </div>
                 ) : (
                   <div className="mt-3 rounded-md bg-amber-50 p-3 text-sm leading-6 text-ink">
-                    免费换绑次数已使用完。
+                    操作过于频繁，请稍后再试。
                     <br />
-                    本次将扣除 {pendingDeviceRebind.details.costMinutes} 分钟监督时长。
+                    可再次尝试时间：
+                    {formatDateTime(pendingDeviceRebind.details.nextAvailableAt)}
                   </div>
                 )}
+              </>
+            ) : (
+              <>
+                <p className="mt-3 text-sm font-medium leading-6 text-ink">
+                  访问码15天内最多可免费重新绑定10次。
+                </p>
+                <p className="mt-3 text-sm leading-6 text-muted">
+                  当前访问码已在其他浏览器或设备环境中激活。
+                  更换手机、平板，或切换微信浏览器和系统浏览器时，可能需要重新绑定。
+                  是否将访问码重新绑定到当前环境？
+                </p>
+                <div className="mt-3 rounded-md bg-emerald-50 p-3 text-sm leading-6 text-ink">
+                  最近{pendingDeviceRebind.details.windowDays}天已重新绑定{" "}
+                  {pendingDeviceRebind.details.usedCount}/
+                  {pendingDeviceRebind.details.maxCount} 次。
+                  <br />
+                  本次确认后将变为 {pendingDeviceRebind.details.nextCount}/
+                  {pendingDeviceRebind.details.maxCount} 次。
+                </div>
               </>
             )}
             {error && <p className="mt-3 text-sm text-alert">{error}</p>}
@@ -368,32 +415,43 @@ export default function HomePage() {
                 }}
                 className="h-11 rounded-md border border-line px-4 font-medium disabled:opacity-60"
               >
-                {pendingDeviceRebind.details.cooldownRemainingSeconds > 0 ? "知道了" : "取消"}
+                {pendingDeviceRebind.details.allowed ? "取消" : "知道了"}
               </button>
-              {pendingDeviceRebind.details.cooldownRemainingSeconds <= 0 && (
+              {pendingDeviceRebind.details.allowed && (
                 <button
                   type="button"
-                  disabled={
-                    loading ||
-                    (!pendingDeviceRebind.details.isFree &&
-                      pendingDeviceRebind.details.remainingMinutes <
-                        pendingDeviceRebind.details.costMinutes)
-                  }
+                  disabled={loading}
                   onClick={() => void confirmDeviceRebind()}
                   className="h-11 rounded-md bg-brand px-4 font-semibold text-white disabled:opacity-60"
                 >
-                  {loading ? "正在更换" : "确认换绑"}
+                  {loading ? "正在重新绑定" : "确认重新绑定"}
                 </button>
               )}
             </div>
-            {!pendingDeviceRebind.details.isFree &&
-              pendingDeviceRebind.details.remainingMinutes <
-                pendingDeviceRebind.details.costMinutes && (
-                <p className="mt-3 text-sm text-alert">
-                  剩余监督时长不足 {pendingDeviceRebind.details.costMinutes}
-                  分钟，无法完成设备更换。
-                </p>
-              )}
+          </div>
+        </div>
+      )}
+
+      {reactivatedDeviceInfo && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-md rounded-md bg-white p-5 shadow-lg">
+            <h2 className="text-xl font-semibold">重新绑定成功</h2>
+            <p className="mt-3 text-sm leading-6 text-muted">
+              访问码已切换到当前使用环境，原使用环境将无法继续监督。
+            </p>
+            <button
+              type="button"
+              disabled={loading}
+              onClick={() => {
+                const deviceInfo = reactivatedDeviceInfo;
+                setReactivatedDeviceInfo(null);
+                setLoading(true);
+                void validateAndEnter(deviceInfo).finally(() => setLoading(false));
+              }}
+              className="mt-5 h-11 w-full rounded-md bg-brand px-4 font-semibold text-white disabled:opacity-60"
+            >
+              {loading ? "正在进入" : "继续监督"}
+            </button>
           </div>
         </div>
       )}
@@ -410,10 +468,14 @@ function formatReportDate(value: string) {
   });
 }
 
-function formatCooldown(seconds: number) {
-  const hours = Math.floor(seconds / 3600);
-  const minutes = Math.ceil((seconds % 3600) / 60);
-  if (hours <= 0) return `${Math.max(1, minutes)}分钟`;
-  if (minutes <= 0) return `${hours}小时`;
-  return `${hours}小时${minutes}分钟`;
+function formatDateTime(value: string | null) {
+  if (!value) return "请稍后再试";
+  return new Date(value).toLocaleString("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false
+  });
 }

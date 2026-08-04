@@ -1,9 +1,6 @@
--- 第二轮：访问码自助换绑 MVP
--- 上线顺序必须是：先执行本迁移，再部署应用。
--- 新增字段均兼容已有访问码；已有访问码统一获得 3 次免费换绑。
-
-alter table access_codes
-  add column if not exists free_rebind_count integer not null default 3;
+-- v0.9：浏览器使用环境重新激活 MVP
+-- 生产仍为 v0.8，本迁移尚未执行；上线顺序必须是 Migration → Deploy → 真机验收。
+-- 重新激活不修改套餐、总监督时长、已用时长、会话时长或报告数据。
 
 alter table access_codes
   add column if not exists last_rebind_at timestamptz;
@@ -23,17 +20,14 @@ alter table access_codes
 alter table access_codes
   add column if not exists device_bound_at timestamptz;
 
+alter table access_codes
+  add column if not exists reactivation_flagged_at timestamptz;
+
+alter table access_codes
+  add column if not exists reactivation_flag_reason text;
+
 update access_codes
-set
-  free_rebind_count = greatest(coalesce(free_rebind_count, 3), 0),
-  rebind_total = greatest(coalesce(rebind_total, 0), 0);
-
-alter table access_codes
-  drop constraint if exists access_codes_free_rebind_count_check;
-
-alter table access_codes
-  add constraint access_codes_free_rebind_count_check
-  check (free_rebind_count >= 0);
+set rebind_total = greatest(coalesce(rebind_total, 0), 0);
 
 alter table access_codes
   drop constraint if exists access_codes_rebind_total_check;
@@ -44,20 +38,26 @@ alter table access_codes
 
 create table if not exists device_rebind_configs (
   id boolean primary key default true check (id),
-  rebind_cost_minutes integer not null default 30 check (rebind_cost_minutes > 0),
-  rebind_cooldown_hours integer not null default 24 check (rebind_cooldown_hours >= 0),
+  rebind_window_days integer not null default 15
+    check (rebind_window_days between 1 and 90),
+  rebind_max_count integer not null default 10
+    check (rebind_max_count between 1 and 100),
+  rebind_min_interval_seconds integer not null default 60
+    check (rebind_min_interval_seconds between 10 and 86400),
   updated_at timestamptz not null default now()
 );
 
 insert into device_rebind_configs (
   id,
-  rebind_cost_minutes,
-  rebind_cooldown_hours,
+  rebind_window_days,
+  rebind_max_count,
+  rebind_min_interval_seconds,
   updated_at
 ) values (
   true,
-  30,
-  24,
+  15,
+  10,
+  60,
   now()
 )
 on conflict (id) do nothing;
@@ -67,6 +67,8 @@ create table if not exists device_rebind_logs (
   access_code_id uuid references access_codes(id) on delete set null,
   access_code text not null,
   idempotency_key text not null,
+  action_source text not null default 'user'
+    check (action_source in ('user', 'admin')),
   old_device_id text,
   old_device_name text,
   old_device_model text,
@@ -77,10 +79,12 @@ create table if not exists device_rebind_logs (
   new_device_platform text,
   ip text,
   user_agent text,
-  is_free boolean not null default false,
-  deducted_minutes integer not null default 0,
-  remaining_minutes integer not null default 0,
-  free_rebind_count integer not null default 0,
+  window_days integer not null default 15,
+  max_count integer not null default 10,
+  min_interval_seconds integer not null default 60,
+  window_count_before integer not null default 0,
+  window_count_after integer not null default 0,
+  next_available_at timestamptz,
   success boolean not null default false,
   result_code text not null,
   failure_reason text,
@@ -95,8 +99,89 @@ create index if not exists idx_device_rebind_logs_access_code_id
 create index if not exists idx_device_rebind_logs_created_at
   on device_rebind_logs(created_at desc);
 
+create index if not exists idx_device_rebind_logs_window_count
+  on device_rebind_logs(access_code_id, created_at desc)
+  where success = true
+    and action_source = 'user'
+    and result_code = 'rebound';
+
 alter table device_rebind_configs enable row level security;
 alter table device_rebind_logs enable row level security;
+
+create or replace function get_device_rebind_status(
+  p_access_code_id uuid
+) returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  config_window_days integer := 15;
+  config_max_count integer := 10;
+  config_min_interval_seconds integer := 60;
+  recent_count integer := 0;
+  first_success_at timestamptz;
+  last_success_at timestamptz;
+  next_available_at timestamptz;
+  allowed boolean := true;
+  limit_reason text;
+begin
+  select
+    rebind_window_days,
+    rebind_max_count,
+    rebind_min_interval_seconds
+  into
+    config_window_days,
+    config_max_count,
+    config_min_interval_seconds
+  from device_rebind_configs
+  where id = true;
+
+  if not found then
+    config_window_days := 15;
+    config_max_count := 10;
+    config_min_interval_seconds := 60;
+  end if;
+
+  select
+    count(*)::integer,
+    min(created_at),
+    max(created_at)
+  into
+    recent_count,
+    first_success_at,
+    last_success_at
+  from device_rebind_logs
+  where access_code_id = p_access_code_id
+    and action_source = 'user'
+    and success = true
+    and result_code = 'rebound'
+    and created_at > now() - make_interval(days => config_window_days);
+
+  if recent_count >= config_max_count then
+    allowed := false;
+    limit_reason := 'window_limit_reached';
+    next_available_at := first_success_at + make_interval(days => config_window_days);
+  elsif last_success_at is not null
+    and last_success_at + make_interval(secs => config_min_interval_seconds) > now() then
+    allowed := false;
+    limit_reason := 'rate_limited';
+    next_available_at :=
+      last_success_at + make_interval(secs => config_min_interval_seconds);
+  end if;
+
+  return jsonb_build_object(
+    'usedCount', recent_count,
+    'maxCount', config_max_count,
+    'nextCount', least(config_max_count, recent_count + 1),
+    'windowDays', config_window_days,
+    'minIntervalSeconds', config_min_interval_seconds,
+    'allowed', allowed,
+    'limitReason', limit_reason,
+    'nextAvailableAt', next_available_at
+  );
+end;
+$$;
 
 create or replace function perform_device_rebind(
   p_access_code text,
@@ -116,14 +201,16 @@ as $$
 declare
   current_code access_codes%rowtype;
   existing_response jsonb;
-  config_cost_minutes integer := 30;
-  config_cooldown_hours integer := 24;
-  current_remaining integer := 0;
-  next_free_rebind_count integer := 0;
-  deducted_minutes integer := 0;
-  is_free_rebind boolean := false;
-  cooldown_remaining_seconds integer := 0;
-  next_rebind_at timestamptz;
+  config_window_days integer := 15;
+  config_max_count integer := 10;
+  config_min_interval_seconds integer := 60;
+  recent_count integer := 0;
+  first_success_at timestamptz;
+  last_success_at timestamptz;
+  next_available_at timestamptz;
+  success_count_24h integer := 0;
+  failed_count_10m integer := 0;
+  distinct_user_agents_24h integer := 0;
   response jsonb;
 begin
   if coalesce(trim(p_access_code), '') = ''
@@ -132,12 +219,15 @@ begin
     return jsonb_build_object(
       'success', false,
       'resultCode', 'invalid_request',
-      'message', '换绑请求信息不完整',
-      'freeRebindCount', 0,
-      'remainingMinutes', 0,
-      'cooldownRemainingSeconds', 0,
-      'costMinutes', 30,
-      'deductedMinutes', 0,
+      'message', '重新绑定请求信息不完整',
+      'usedCount', 0,
+      'maxCount', 10,
+      'nextCount', 0,
+      'windowDays', 15,
+      'minIntervalSeconds', 60,
+      'allowed', false,
+      'limitReason', 'invalid_request',
+      'nextAvailableAt', null,
       'replayed', false
     );
   end if;
@@ -153,11 +243,14 @@ begin
       'success', false,
       'resultCode', 'access_code_not_found',
       'message', '访问码不存在',
-      'freeRebindCount', 0,
-      'remainingMinutes', 0,
-      'cooldownRemainingSeconds', 0,
-      'costMinutes', 30,
-      'deductedMinutes', 0,
+      'usedCount', 0,
+      'maxCount', 10,
+      'nextCount', 0,
+      'windowDays', 15,
+      'minIntervalSeconds', 60,
+      'allowed', false,
+      'limitReason', 'access_code_not_found',
+      'nextAvailableAt', null,
       'replayed', false
     );
   end if;
@@ -174,71 +267,60 @@ begin
   end if;
 
   select
-    rebind_cost_minutes,
-    rebind_cooldown_hours
+    rebind_window_days,
+    rebind_max_count,
+    rebind_min_interval_seconds
   into
-    config_cost_minutes,
-    config_cooldown_hours
+    config_window_days,
+    config_max_count,
+    config_min_interval_seconds
   from device_rebind_configs
   where id = true;
 
   if not found then
-    config_cost_minutes := 30;
-    config_cooldown_hours := 24;
+    config_window_days := 15;
+    config_max_count := 10;
+    config_min_interval_seconds := 60;
   end if;
-
-  config_cost_minutes := greatest(coalesce(config_cost_minutes, 30), 1);
-  config_cooldown_hours := greatest(coalesce(config_cooldown_hours, 24), 0);
-  current_remaining := greatest(0, current_code.total_minutes - current_code.used_minutes);
 
   if current_code.status not in ('active', 'watch') then
     response := jsonb_build_object(
       'success', false,
       'resultCode', 'access_code_unavailable',
       'message', '访问码当前不可用',
-      'freeRebindCount', current_code.free_rebind_count,
-      'remainingMinutes', current_remaining,
-      'cooldownRemainingSeconds', 0,
-      'costMinutes', config_cost_minutes,
-      'deductedMinutes', 0,
+      'usedCount', 0,
+      'maxCount', config_max_count,
+      'nextCount', 0,
+      'windowDays', config_window_days,
+      'minIntervalSeconds', config_min_interval_seconds,
+      'allowed', false,
+      'limitReason', 'access_code_unavailable',
+      'nextAvailableAt', null,
       'replayed', false
     );
 
     insert into device_rebind_logs (
-      access_code_id, access_code, idempotency_key,
+      access_code_id, access_code, idempotency_key, action_source,
       old_device_id, old_device_name, old_device_model, old_device_platform,
       new_device_id, new_device_name, new_device_model, new_device_platform,
-      ip, user_agent, is_free, deducted_minutes, remaining_minutes,
-      free_rebind_count, success, result_code, failure_reason, response_payload
+      ip, user_agent, window_days, max_count, min_interval_seconds,
+      window_count_before, window_count_after, next_available_at,
+      success, result_code, failure_reason, response_payload
     ) values (
-      current_code.id, current_code.code, p_idempotency_key,
+      current_code.id, current_code.code, p_idempotency_key, 'user',
       current_code.device_id, current_code.current_device_name,
       current_code.current_device_model, current_code.current_device_platform,
-      p_new_device_id, p_new_device_name, p_new_device_model, p_new_device_platform,
-      p_ip, p_user_agent, false, 0, current_remaining,
-      current_code.free_rebind_count, false, 'access_code_unavailable',
-      current_code.status, response
-    );
-
-    insert into suspicious_logs (
-      access_code_id, ip, user_agent, event_type, message
-    ) values (
-      current_code.id, p_ip, p_user_agent, 'DEVICE_REBOUND',
-      jsonb_build_object(
-        'success', false,
-        'reason', 'access_code_unavailable',
-        'oldDevice', current_code.device_id,
-        'newDevice', p_new_device_id,
-        'freeRebindCount', current_code.free_rebind_count,
-        'deductedMinutes', 0,
-        'remainingMinutes', current_remaining
-      )::text
+      p_new_device_id, nullif(trim(p_new_device_name), ''),
+      nullif(trim(p_new_device_model), ''), nullif(trim(p_new_device_platform), ''),
+      p_ip, p_user_agent, config_window_days, config_max_count,
+      config_min_interval_seconds, 0, 0, null,
+      false, 'access_code_unavailable', current_code.status, response
     );
 
     return response;
   end if;
 
-  -- 兜底处理直接调用换绑接口的首次绑定；不消耗免费次数。
+  -- 兜底处理直接调用重新激活接口的首次激活；首次激活不计次数、不写历史。
   if current_code.device_id is null then
     update access_codes
     set
@@ -252,150 +334,166 @@ begin
 
     return jsonb_build_object(
       'success', true,
-      'resultCode', 'first_bound',
-      'message', '设备已绑定',
-      'freeRebindCount', current_code.free_rebind_count,
-      'remainingMinutes', current_remaining,
-      'cooldownRemainingSeconds', 0,
-      'costMinutes', config_cost_minutes,
-      'deductedMinutes', 0,
-      'isFree', true,
+      'resultCode', 'first_activated',
+      'message', '当前使用环境已激活',
+      'usedCount', 0,
+      'maxCount', config_max_count,
+      'nextCount', 0,
+      'windowDays', config_window_days,
+      'minIntervalSeconds', config_min_interval_seconds,
+      'allowed', true,
+      'limitReason', null,
+      'nextAvailableAt', null,
       'replayed', false
     );
   end if;
 
-  -- 并发请求中，前一个请求已把同一目标设备绑定成功时直接返回，不重复扣减。
+  -- 并发请求中，前一个请求已激活相同目标环境时直接返回，不计次数。
   if current_code.device_id = p_new_device_id then
     return jsonb_build_object(
       'success', true,
-      'resultCode', 'already_bound',
-      'message', '当前设备已经绑定',
-      'freeRebindCount', current_code.free_rebind_count,
-      'remainingMinutes', current_remaining,
-      'cooldownRemainingSeconds', 0,
-      'costMinutes', config_cost_minutes,
-      'deductedMinutes', 0,
-      'isFree', true,
-      'replayed', false
-    );
-  end if;
-
-  if current_code.last_rebind_at is not null
-    and current_code.last_rebind_at + make_interval(hours => config_cooldown_hours) > now() then
-    next_rebind_at :=
-      current_code.last_rebind_at + make_interval(hours => config_cooldown_hours);
-    cooldown_remaining_seconds := greatest(
-      1,
-      ceil(extract(epoch from (next_rebind_at - now())))::integer
-    );
-
-    response := jsonb_build_object(
-      'success', false,
-      'resultCode', 'cooldown_active',
-      'message', '为了保障访问码安全，请在冷却结束后再次尝试',
-      'freeRebindCount', current_code.free_rebind_count,
-      'remainingMinutes', current_remaining,
-      'cooldownRemainingSeconds', cooldown_remaining_seconds,
-      'nextRebindAt', next_rebind_at,
-      'costMinutes', config_cost_minutes,
-      'deductedMinutes', 0,
-      'replayed', false
-    );
-
-    insert into device_rebind_logs (
-      access_code_id, access_code, idempotency_key,
-      old_device_id, old_device_name, old_device_model, old_device_platform,
-      new_device_id, new_device_name, new_device_model, new_device_platform,
-      ip, user_agent, is_free, deducted_minutes, remaining_minutes,
-      free_rebind_count, success, result_code, failure_reason, response_payload
-    ) values (
-      current_code.id, current_code.code, p_idempotency_key,
-      current_code.device_id, current_code.current_device_name,
-      current_code.current_device_model, current_code.current_device_platform,
-      p_new_device_id, p_new_device_name, p_new_device_model, p_new_device_platform,
-      p_ip, p_user_agent, current_code.free_rebind_count > 0, 0, current_remaining,
-      current_code.free_rebind_count, false, 'cooldown_active',
-      'cooldown_active', response
-    );
-
-    insert into suspicious_logs (
-      access_code_id, ip, user_agent, event_type, message
-    ) values (
-      current_code.id, p_ip, p_user_agent, 'DEVICE_REBOUND',
-      jsonb_build_object(
-        'success', false,
-        'reason', 'cooldown_active',
-        'oldDevice', current_code.device_id,
-        'newDevice', p_new_device_id,
-        'freeRebindCount', current_code.free_rebind_count,
-        'deductedMinutes', 0,
-        'remainingMinutes', current_remaining,
-        'cooldownRemainingSeconds', cooldown_remaining_seconds
-      )::text
-    );
-
-    return response;
-  end if;
-
-  is_free_rebind := current_code.free_rebind_count > 0;
-
-  if not is_free_rebind and current_remaining < config_cost_minutes then
-    response := jsonb_build_object(
-      'success', false,
-      'resultCode', 'insufficient_minutes',
-      'message', format(
-        '剩余监督时长不足%s分钟，无法完成设备更换',
-        config_cost_minutes
+      'resultCode', 'already_active',
+      'message', '当前使用环境已经激活',
+      'usedCount', (
+        select count(*)::integer
+        from device_rebind_logs
+        where access_code_id = current_code.id
+          and action_source = 'user'
+          and success = true
+          and result_code = 'rebound'
+          and created_at > now() - make_interval(days => config_window_days)
       ),
-      'freeRebindCount', current_code.free_rebind_count,
-      'remainingMinutes', current_remaining,
-      'cooldownRemainingSeconds', 0,
-      'costMinutes', config_cost_minutes,
-      'deductedMinutes', 0,
+      'maxCount', config_max_count,
+      'nextCount', 0,
+      'windowDays', config_window_days,
+      'minIntervalSeconds', config_min_interval_seconds,
+      'allowed', true,
+      'limitReason', null,
+      'nextAvailableAt', null,
+      'replayed', false
+    );
+  end if;
+
+  select
+    count(*)::integer,
+    min(created_at),
+    max(created_at)
+  into
+    recent_count,
+    first_success_at,
+    last_success_at
+  from device_rebind_logs
+  where access_code_id = current_code.id
+    and action_source = 'user'
+    and success = true
+    and result_code = 'rebound'
+    and created_at > now() - make_interval(days => config_window_days);
+
+  if recent_count >= config_max_count then
+    next_available_at := first_success_at + make_interval(days => config_window_days);
+    response := jsonb_build_object(
+      'success', false,
+      'resultCode', 'window_limit_reached',
+      'message', format(
+        '最近%s天内重新绑定次数已达到%s次',
+        config_window_days,
+        config_max_count
+      ),
+      'usedCount', recent_count,
+      'maxCount', config_max_count,
+      'nextCount', recent_count,
+      'windowDays', config_window_days,
+      'minIntervalSeconds', config_min_interval_seconds,
+      'allowed', false,
+      'limitReason', 'window_limit_reached',
+      'nextAvailableAt', next_available_at,
       'replayed', false
     );
 
     insert into device_rebind_logs (
-      access_code_id, access_code, idempotency_key,
+      access_code_id, access_code, idempotency_key, action_source,
       old_device_id, old_device_name, old_device_model, old_device_platform,
       new_device_id, new_device_name, new_device_model, new_device_platform,
-      ip, user_agent, is_free, deducted_minutes, remaining_minutes,
-      free_rebind_count, success, result_code, failure_reason, response_payload
+      ip, user_agent, window_days, max_count, min_interval_seconds,
+      window_count_before, window_count_after, next_available_at,
+      success, result_code, failure_reason, response_payload
     ) values (
-      current_code.id, current_code.code, p_idempotency_key,
+      current_code.id, current_code.code, p_idempotency_key, 'user',
       current_code.device_id, current_code.current_device_name,
       current_code.current_device_model, current_code.current_device_platform,
-      p_new_device_id, p_new_device_name, p_new_device_model, p_new_device_platform,
-      p_ip, p_user_agent, false, 0, current_remaining,
-      current_code.free_rebind_count, false, 'insufficient_minutes',
-      'insufficient_minutes', response
+      p_new_device_id, nullif(trim(p_new_device_name), ''),
+      nullif(trim(p_new_device_model), ''), nullif(trim(p_new_device_platform), ''),
+      p_ip, p_user_agent, config_window_days, config_max_count,
+      config_min_interval_seconds, recent_count, recent_count, next_available_at,
+      false, 'window_limit_reached', 'window_limit_reached', response
     );
 
-    insert into suspicious_logs (
-      access_code_id, ip, user_agent, event_type, message
-    ) values (
-      current_code.id, p_ip, p_user_agent, 'DEVICE_REBOUND',
-      jsonb_build_object(
-        'success', false,
-        'reason', 'insufficient_minutes',
-        'oldDevice', current_code.device_id,
-        'newDevice', p_new_device_id,
-        'freeRebindCount', current_code.free_rebind_count,
-        'deductedMinutes', 0,
-        'remainingMinutes', current_remaining
-      )::text
-    );
+    update access_codes
+    set
+      reactivation_flagged_at = coalesce(reactivation_flagged_at, now()),
+      reactivation_flag_reason = '最近滚动窗口内重新激活频繁',
+      updated_at = now()
+    where id = current_code.id;
 
     return response;
   end if;
 
-  deducted_minutes := case when is_free_rebind then 0 else config_cost_minutes end;
-  next_free_rebind_count := case
-    when is_free_rebind then current_code.free_rebind_count - 1
-    else current_code.free_rebind_count
-  end;
-  current_remaining := current_remaining - deducted_minutes;
-  next_rebind_at := now() + make_interval(hours => config_cooldown_hours);
+  if last_success_at is not null
+    and last_success_at + make_interval(secs => config_min_interval_seconds) > now() then
+    next_available_at :=
+      last_success_at + make_interval(secs => config_min_interval_seconds);
+    response := jsonb_build_object(
+      'success', false,
+      'resultCode', 'rate_limited',
+      'message', '操作过于频繁，请稍后再试',
+      'usedCount', recent_count,
+      'maxCount', config_max_count,
+      'nextCount', recent_count + 1,
+      'windowDays', config_window_days,
+      'minIntervalSeconds', config_min_interval_seconds,
+      'allowed', false,
+      'limitReason', 'rate_limited',
+      'nextAvailableAt', next_available_at,
+      'replayed', false
+    );
+
+    insert into device_rebind_logs (
+      access_code_id, access_code, idempotency_key, action_source,
+      old_device_id, old_device_name, old_device_model, old_device_platform,
+      new_device_id, new_device_name, new_device_model, new_device_platform,
+      ip, user_agent, window_days, max_count, min_interval_seconds,
+      window_count_before, window_count_after, next_available_at,
+      success, result_code, failure_reason, response_payload
+    ) values (
+      current_code.id, current_code.code, p_idempotency_key, 'user',
+      current_code.device_id, current_code.current_device_name,
+      current_code.current_device_model, current_code.current_device_platform,
+      p_new_device_id, nullif(trim(p_new_device_name), ''),
+      nullif(trim(p_new_device_model), ''), nullif(trim(p_new_device_platform), ''),
+      p_ip, p_user_agent, config_window_days, config_max_count,
+      config_min_interval_seconds, recent_count, recent_count, next_available_at,
+      false, 'rate_limited', 'rate_limited', response
+    );
+
+    select count(*)::integer
+    into failed_count_10m
+    from device_rebind_logs
+    where access_code_id = current_code.id
+      and action_source = 'user'
+      and success = false
+      and created_at > now() - interval '10 minutes';
+
+    if failed_count_10m >= 10 then
+      update access_codes
+      set
+        reactivation_flagged_at = coalesce(reactivation_flagged_at, now()),
+        reactivation_flag_reason = '短时间内重新激活失败请求较多',
+        updated_at = now()
+      where id = current_code.id;
+    end if;
+
+    return response;
+  end if;
 
   update access_codes
   set
@@ -404,79 +502,257 @@ begin
     current_device_model = nullif(trim(p_new_device_model), ''),
     current_device_platform = nullif(trim(p_new_device_platform), ''),
     device_bound_at = now(),
-    free_rebind_count = next_free_rebind_count,
     last_rebind_at = now(),
     rebind_total = current_code.rebind_total + 1,
-    used_minutes = least(
-      current_code.total_minutes,
-      current_code.used_minutes + deducted_minutes
-    ),
-    used_minutes_today = least(
-      current_code.total_minutes,
-      current_code.used_minutes + deducted_minutes
-    ),
     updated_at = now()
   where id = current_code.id;
 
-  -- 换绑后让旧设备持有的会话令牌立即失效；新设备重新验证后可恢复会话。
+  -- 旧环境令牌在同一事务提交时失效，新环境重新验证后恢复当前会话。
   update sessions
   set session_token = p_new_session_token
   where access_code_id = current_code.id
     and status = 'active'
     and end_time is null;
 
+  next_available_at := now() + make_interval(secs => config_min_interval_seconds);
   response := jsonb_build_object(
     'success', true,
     'resultCode', 'rebound',
-    'message', '设备更换成功',
-    'freeRebindCount', next_free_rebind_count,
-    'remainingMinutes', current_remaining,
-    'cooldownRemainingSeconds', config_cooldown_hours * 3600,
-    'nextRebindAt', next_rebind_at,
-    'costMinutes', config_cost_minutes,
-    'deductedMinutes', deducted_minutes,
-    'isFree', is_free_rebind,
+      'message', '重新绑定成功',
+    'usedCount', recent_count + 1,
+    'maxCount', config_max_count,
+    'nextCount', recent_count + 1,
+    'windowDays', config_window_days,
+    'minIntervalSeconds', config_min_interval_seconds,
+    'allowed', true,
+    'limitReason', null,
+    'nextAvailableAt', next_available_at,
     'replayed', false
   );
 
   insert into device_rebind_logs (
-    access_code_id, access_code, idempotency_key,
+    access_code_id, access_code, idempotency_key, action_source,
     old_device_id, old_device_name, old_device_model, old_device_platform,
     new_device_id, new_device_name, new_device_model, new_device_platform,
-    ip, user_agent, is_free, deducted_minutes, remaining_minutes,
-    free_rebind_count, success, result_code, failure_reason, response_payload
+    ip, user_agent, window_days, max_count, min_interval_seconds,
+    window_count_before, window_count_after, next_available_at,
+    success, result_code, failure_reason, response_payload
   ) values (
-    current_code.id, current_code.code, p_idempotency_key,
+    current_code.id, current_code.code, p_idempotency_key, 'user',
     current_code.device_id, current_code.current_device_name,
     current_code.current_device_model, current_code.current_device_platform,
-    p_new_device_id, p_new_device_name, p_new_device_model, p_new_device_platform,
-    p_ip, p_user_agent, is_free_rebind, deducted_minutes, current_remaining,
-    next_free_rebind_count, true, 'rebound', null, response
+    p_new_device_id, nullif(trim(p_new_device_name), ''),
+    nullif(trim(p_new_device_model), ''), nullif(trim(p_new_device_platform), ''),
+    p_ip, p_user_agent, config_window_days, config_max_count,
+    config_min_interval_seconds, recent_count, recent_count + 1, next_available_at,
+    true, 'rebound', null, response
   );
 
   insert into suspicious_logs (
     access_code_id, ip, user_agent, event_type, message
   ) values (
-    current_code.id, p_ip, p_user_agent, 'DEVICE_REBOUND',
+    current_code.id, p_ip, p_user_agent, '使用环境重新激活',
     jsonb_build_object(
       'success', true,
-      'oldDevice', current_code.device_id,
-      'newDevice', p_new_device_id,
-      'isFree', is_free_rebind,
-      'freeRebindCount', next_free_rebind_count,
-      'deductedMinutes', deducted_minutes,
-      'remainingMinutes', current_remaining
+      'oldEnvironment', current_code.device_id,
+      'newEnvironment', p_new_device_id,
+      'windowCount', recent_count + 1,
+      'windowDays', config_window_days
     )::text
   );
+
+  select count(*)::integer
+  into success_count_24h
+  from device_rebind_logs
+  where access_code_id = current_code.id
+    and action_source = 'user'
+    and success = true
+    and result_code = 'rebound'
+    and created_at > now() - interval '24 hours';
+
+  select count(distinct user_agent)::integer
+  into distinct_user_agents_24h
+  from device_rebind_logs
+  where access_code_id = current_code.id
+    and action_source = 'user'
+    and user_agent is not null
+    and created_at > now() - interval '24 hours';
+
+  if recent_count + 1 >= config_max_count
+    or success_count_24h >= 5
+    or distinct_user_agents_24h >= 5 then
+    update access_codes
+    set
+      reactivation_flagged_at = coalesce(reactivation_flagged_at, now()),
+      reactivation_flag_reason = case
+        when recent_count + 1 >= config_max_count
+          then '最近滚动窗口内已用完重新激活次数'
+        when success_count_24h >= 5
+          then '24小时内重新激活达到5次'
+        else '24小时内出现大量不同浏览器标识'
+      end,
+      updated_at = now()
+    where id = current_code.id;
+  end if;
 
   return response;
 end;
 $$;
 
+revoke all on function get_device_rebind_status(uuid)
+  from public, anon, authenticated;
+grant execute on function get_device_rebind_status(uuid) to service_role;
+
 revoke all on function perform_device_rebind(
   text, text, text, text, text, text, text, text, text
-) from public;
+) from public, anon, authenticated;
 
 grant execute on function perform_device_rebind(
   text, text, text, text, text, text, text, text, text
+) to service_role;
+
+create or replace function admin_reset_device_environment(
+  p_access_code_id uuid,
+  p_reason text,
+  p_admin text,
+  p_request_id text,
+  p_new_session_token text
+) returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  current_code access_codes%rowtype;
+  updated_code access_codes%rowtype;
+  config_window_days integer := 15;
+  config_max_count integer := 10;
+  config_min_interval_seconds integer := 60;
+  recent_count integer := 0;
+begin
+  if p_access_code_id is null
+    or coalesce(trim(p_reason), '') = ''
+    or coalesce(trim(p_request_id), '') = ''
+    or coalesce(trim(p_new_session_token), '') = '' then
+    return jsonb_build_object(
+      'success', false,
+      'resultCode', 'invalid_request',
+      'message', '管理员重置必须填写原因'
+    );
+  end if;
+
+  select *
+  into current_code
+  from access_codes
+  where id = p_access_code_id
+  for update;
+
+  if not found then
+    return jsonb_build_object(
+      'success', false,
+      'resultCode', 'access_code_not_found',
+      'message', '访问码不存在'
+    );
+  end if;
+
+  select
+    rebind_window_days,
+    rebind_max_count,
+    rebind_min_interval_seconds
+  into
+    config_window_days,
+    config_max_count,
+    config_min_interval_seconds
+  from device_rebind_configs
+  where id = true;
+
+  if not found then
+    config_window_days := 15;
+    config_max_count := 10;
+    config_min_interval_seconds := 60;
+  end if;
+
+  select count(*)::integer
+  into recent_count
+  from device_rebind_logs
+  where access_code_id = current_code.id
+    and action_source = 'user'
+    and success = true
+    and result_code = 'rebound'
+    and created_at > now() - make_interval(days => config_window_days);
+
+  update access_codes
+  set
+    device_id = null,
+    current_device_name = null,
+    current_device_model = null,
+    current_device_platform = null,
+    device_bound_at = null,
+    updated_at = now()
+  where id = current_code.id
+  returning * into updated_code;
+
+  update sessions
+  set session_token = p_new_session_token
+  where access_code_id = current_code.id
+    and status = 'active'
+    and end_time is null;
+
+  insert into device_rebind_logs (
+    access_code_id, access_code, idempotency_key, action_source,
+    old_device_id, old_device_name, old_device_model, old_device_platform,
+    new_device_id, new_device_name, new_device_model, new_device_platform,
+    ip, user_agent, window_days, max_count, min_interval_seconds,
+    window_count_before, window_count_after, next_available_at,
+    success, result_code, failure_reason, response_payload
+  ) values (
+    current_code.id, current_code.code, p_request_id, 'admin',
+    current_code.device_id, current_code.current_device_name,
+    current_code.current_device_model, current_code.current_device_platform,
+    null, null, null, null,
+    null, null, config_window_days, config_max_count,
+    config_min_interval_seconds, recent_count, recent_count, null,
+    true, 'admin_reset', null,
+    jsonb_build_object(
+      'success', true,
+      'resultCode', 'admin_reset',
+      'message', '当前激活环境已由管理员重置',
+      'usedCount', recent_count,
+      'maxCount', config_max_count
+    )
+  );
+
+  insert into admin_actions (
+    admin,
+    access_code_id,
+    action_type,
+    before_data,
+    after_data,
+    reason
+  ) values (
+    coalesce(nullif(trim(p_admin), ''), 'unknown'),
+    current_code.id,
+    'reset_device_environment',
+    to_jsonb(current_code),
+    to_jsonb(updated_code),
+    trim(p_reason)
+  );
+
+  return jsonb_build_object(
+    'success', true,
+    'resultCode', 'admin_reset',
+    'message', '当前激活环境已重置',
+    'accessCode', to_jsonb(updated_code),
+    'usedCount', recent_count,
+    'maxCount', config_max_count
+  );
+end;
+$$;
+
+revoke all on function admin_reset_device_environment(
+  uuid, text, text, text, text
+) from public, anon, authenticated;
+
+grant execute on function admin_reset_device_environment(
+  uuid, text, text, text, text
 ) to service_role;

@@ -1,88 +1,103 @@
 export type DeviceRebindPolicyInput = {
   currentDeviceId: string | null;
   requestedDeviceId: string;
-  freeRebindCount: number;
-  remainingMinutes: number;
-  costMinutes: number;
-  cooldownRemainingSeconds: number;
+  successfulReactivationTimes: string[];
+  windowDays: number;
+  maxCount: number;
+  minIntervalSeconds: number;
+  now?: Date;
 };
 
 export type DeviceRebindPolicyDecision = {
   result:
-    | "first_bind"
-    | "same_device"
-    | "free_rebind"
-    | "paid_rebind"
-    | "cooldown_active"
-    | "insufficient_minutes";
+    | "first_activation"
+    | "same_environment"
+    | "reactivation"
+    | "rate_limited"
+    | "window_limit_reached";
   allowed: boolean;
-  nextFreeRebindCount: number;
-  deductedMinutes: number;
-  nextRemainingMinutes: number;
+  usedCount: number;
+  maxCount: number;
+  nextCount: number;
+  nextAvailableAt: string | null;
 };
 
 export function evaluateDeviceRebindPolicy(
   input: DeviceRebindPolicyInput
 ): DeviceRebindPolicyDecision {
-  const freeRebindCount = Math.max(0, Math.floor(input.freeRebindCount));
-  const remainingMinutes = Math.max(0, Math.floor(input.remainingMinutes));
-  const costMinutes = Math.max(1, Math.floor(input.costMinutes));
+  const now = input.now ?? new Date();
+  const nowMs = now.getTime();
+  const windowDays = Math.min(90, Math.max(1, Math.floor(input.windowDays)));
+  const maxCount = Math.min(100, Math.max(1, Math.floor(input.maxCount)));
+  const minIntervalSeconds = Math.min(
+    86_400,
+    Math.max(10, Math.floor(input.minIntervalSeconds))
+  );
+  const windowStartMs = nowMs - windowDays * 24 * 60 * 60 * 1000;
+  const successfulTimes = input.successfulReactivationTimes
+    .map((value) => new Date(value).getTime())
+    .filter((value) => Number.isFinite(value) && value > windowStartMs && value <= nowMs)
+    .sort((left, right) => left - right);
+  const usedCount = successfulTimes.length;
 
   if (!input.currentDeviceId) {
     return {
-      result: "first_bind",
+      result: "first_activation",
       allowed: true,
-      nextFreeRebindCount: freeRebindCount,
-      deductedMinutes: 0,
-      nextRemainingMinutes: remainingMinutes
+      usedCount,
+      maxCount,
+      nextCount: usedCount,
+      nextAvailableAt: null
     };
   }
 
   if (input.currentDeviceId === input.requestedDeviceId) {
     return {
-      result: "same_device",
+      result: "same_environment",
       allowed: true,
-      nextFreeRebindCount: freeRebindCount,
-      deductedMinutes: 0,
-      nextRemainingMinutes: remainingMinutes
+      usedCount,
+      maxCount,
+      nextCount: usedCount,
+      nextAvailableAt: null
     };
   }
 
-  if (input.cooldownRemainingSeconds > 0) {
+  if (usedCount >= maxCount) {
     return {
-      result: "cooldown_active",
+      result: "window_limit_reached",
       allowed: false,
-      nextFreeRebindCount: freeRebindCount,
-      deductedMinutes: 0,
-      nextRemainingMinutes: remainingMinutes
+      usedCount,
+      maxCount,
+      nextCount: usedCount,
+      nextAvailableAt: new Date(
+        successfulTimes[0] + windowDays * 24 * 60 * 60 * 1000
+      ).toISOString()
     };
   }
 
-  if (freeRebindCount > 0) {
+  const latestSuccessMs = successfulTimes[successfulTimes.length - 1];
+  if (
+    latestSuccessMs !== undefined &&
+    latestSuccessMs + minIntervalSeconds * 1000 > nowMs
+  ) {
     return {
-      result: "free_rebind",
-      allowed: true,
-      nextFreeRebindCount: freeRebindCount - 1,
-      deductedMinutes: 0,
-      nextRemainingMinutes: remainingMinutes
-    };
-  }
-
-  if (remainingMinutes < costMinutes) {
-    return {
-      result: "insufficient_minutes",
+      result: "rate_limited",
       allowed: false,
-      nextFreeRebindCount: 0,
-      deductedMinutes: 0,
-      nextRemainingMinutes: remainingMinutes
+      usedCount,
+      maxCount,
+      nextCount: usedCount + 1,
+      nextAvailableAt: new Date(
+        latestSuccessMs + minIntervalSeconds * 1000
+      ).toISOString()
     };
   }
 
   return {
-    result: "paid_rebind",
+    result: "reactivation",
     allowed: true,
-    nextFreeRebindCount: 0,
-    deductedMinutes: costMinutes,
-    nextRemainingMinutes: remainingMinutes - costMinutes
+    usedCount,
+    maxCount,
+    nextCount: usedCount + 1,
+    nextAvailableAt: null
   };
 }

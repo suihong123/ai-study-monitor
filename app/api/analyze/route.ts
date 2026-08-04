@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { costConfig } from "@/lib/costs";
 import { getActiveVisionModelConfig, type VisionModelConfig } from "@/lib/model-config";
+import { isAbortError } from "@/lib/supervision-request-lifecycle";
 import { supabaseAdmin } from "@/lib/supabase/server";
 import {
   checkRateLimit,
-  logAiCall,
   logError,
   validateSessionRequest
 } from "@/lib/security";
@@ -195,7 +195,11 @@ function pickMockStatus(sessionId: string) {
   };
 }
 
-async function analyzeWithQwen(image: string, config: VisionModelConfig) {
+async function analyzeWithQwen(
+  image: string,
+  config: VisionModelConfig,
+  signal: AbortSignal
+) {
   const apiKey = process.env.QWEN_API_KEY;
   const apiUrl = config.apiUrl;
   const model = config.model;
@@ -218,45 +222,28 @@ async function analyzeWithQwen(image: string, config: VisionModelConfig) {
     response_format: { type: "json_object" }
   };
 
-  console.info("[Qwen-VL] request", {
-    url: apiUrl,
-    model,
-    configSource: config.source,
-    body: {
-      ...requestBody,
-      messages: requestBody.messages.map((message) => ({
-        ...message,
-        content: message.content.map((item) =>
-          item.type === "image_url"
-            ? {
-                type: "image_url",
-                image_url: {
-                  url: `[base64 image omitted, length=${image.length}]`
-                }
-              }
-            : item
-        )
-      }))
-    }
-  });
-
+  const upstreamStartedAt = Date.now();
   const response = await fetch(apiUrl, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${apiKey}`
     },
-    body: JSON.stringify(requestBody)
+    body: JSON.stringify(requestBody),
+    signal
   });
 
   const responseBody = await response.text();
-  console.info("[Qwen-VL] response", {
-    url: apiUrl,
+  const upstreamRequestId =
+    response.headers.get("x-request-id") ??
+    response.headers.get("x-dashscope-request-id");
+  console.info("[Qwen-VL] completed", {
+    provider: "qwen",
     model,
-    configSource: config.source,
+    requestId: upstreamRequestId?.slice(0, 64) ?? null,
     status: response.status,
-    ok: response.ok,
-    body: responseBody
+    latencyMs: Date.now() - upstreamStartedAt,
+    fallback: !response.ok
   });
 
   if (!response.ok) {
@@ -331,21 +318,25 @@ export async function POST(request: NextRequest) {
   const requestedMode = visionConfig.mode;
   let analyzeMode = requestedMode;
   let analyzed;
+  let modelErrorMessage: string | null = null;
 
   try {
     analyzed =
       requestedMode === "qwen"
-        ? await analyzeWithQwen(body.image, visionConfig)
+        ? await analyzeWithQwen(body.image, visionConfig, request.signal)
         : pickMockStatus(auth.context.session.id);
   } catch (error) {
+    if (request.signal.aborted || isAbortError(error)) {
+      return new NextResponse(null, { status: 499 });
+    }
     analyzeMode = "mock";
-    await logError({
-      sessionId: auth.context.session.id,
-      accessCodeId: auth.context.accessCode.id,
-      errorType: "analyze接口失败",
-      errorMessage: error instanceof Error ? error.message : "Qwen-VL调用失败"
-    });
+    modelErrorMessage =
+      error instanceof Error ? error.message : "Qwen-VL调用失败";
     analyzed = pickMockStatus(auth.context.session.id);
+  }
+
+  if (request.signal.aborted) {
+    return new NextResponse(null, { status: 499 });
   }
 
   const output = {
@@ -359,56 +350,69 @@ export async function POST(request: NextRequest) {
     provider: analyzeMode === "qwen" ? "qwen-vl" : "mock"
   };
 
-  let recordId: string | null = null;
-  if (supabaseAdmin) {
-    const { data } = await supabaseAdmin
-      .from("records")
-      .insert({
-        session_id: auth.context.session.id,
-        status: output.status,
-        presence: output.presence,
-        learning_state: output.learning_state,
-        timestamp: new Date().toISOString(),
-        confidence: output.confidence,
-        reason: output.reason,
-        analyze_mode: output.analyze_mode,
-        current_frequency_seconds: Number(body.currentFrequencySeconds ?? 0) || null,
-        frequency_boosted_by_abnormal: Boolean(body.frequencyBoostedByAbnormal),
-        frequency_lowered_by_focus: Boolean(body.frequencyLoweredByFocus),
-        reminder_type: null,
-        reminder_text: null,
-        ai_called: true
-      })
-      .select("id")
-      .single();
-    recordId = data?.id ?? null;
-  }
-
-  try {
-    await logAiCall({
-      sessionId: auth.context.session.id,
-      accessCodeId: auth.context.accessCode.id,
-      modelType:
+  const { data: persistence, error: persistenceError } =
+    await supabaseAdmin!.rpc("persist_analysis_result_if_session_current", {
+      p_access_code_id: auth.context.accessCode.id,
+      p_session_id: auth.context.session.id,
+      p_session_token: body.sessionToken,
+      p_status: output.status,
+      p_presence: output.presence,
+      p_learning_state: output.learning_state,
+      p_timestamp: new Date().toISOString(),
+      p_confidence: output.confidence,
+      p_reason: output.reason,
+      p_analyze_mode: output.analyze_mode,
+      p_current_frequency_seconds:
+        Number(body.currentFrequencySeconds ?? 0) || null,
+      p_frequency_boosted_by_abnormal: Boolean(
+        body.frequencyBoostedByAbnormal
+      ),
+      p_frequency_lowered_by_focus: Boolean(body.frequencyLoweredByFocus),
+      p_model_type:
         analyzeMode === "qwen"
           ? `vision_qwen:${visionConfig.model}`
           : "vision_mock",
-      status: "success",
-      inputSize: typeof body.image === "string" ? body.image.length : 0,
-      outputSize: JSON.stringify(output).length,
-      estimatedCost:
+      p_input_size:
+        typeof body.image === "string" ? body.image.length : 0,
+      p_output_size: JSON.stringify(output).length,
+      p_estimated_cost:
         analyzeMode === "qwen"
           ? visionConfig.estimatedCostPerCall
           : costConfig.visionAnalyzeCost,
-      latencyMs: Date.now() - startedAt
+      p_latency_ms: Date.now() - startedAt,
+      p_model_error_message: modelErrorMessage
     });
-  } catch (error) {
+
+  if (persistenceError) {
     await logError({
       sessionId: auth.context.session.id,
       accessCodeId: auth.context.accessCode.id,
       errorType: "analyze接口失败",
-      errorMessage: error instanceof Error ? error.message : "AI调用日志写入失败"
+      errorMessage: persistenceError.message
     });
+    return NextResponse.json(
+      { error: "分析结果保存失败，请稍后重试" },
+      { status: 500 }
+    );
   }
 
-  return NextResponse.json({ ...output, recordId });
+  const persisted = persistence as {
+    persisted?: boolean;
+    recordId?: string | null;
+    resultCode?: string;
+  } | null;
+  if (!persisted?.persisted) {
+    return NextResponse.json(
+      {
+        error: "当前访问码已在其他使用环境中重新绑定",
+        code: "session_reactivated_elsewhere"
+      },
+      { status: 401 }
+    );
+  }
+
+  return NextResponse.json({
+    ...output,
+    recordId: persisted.recordId ?? null
+  });
 }

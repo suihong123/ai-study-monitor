@@ -1,10 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { canUseAccessCode, statusMessages } from "@/lib/access-code-status";
 import { isAdminRequest } from "@/lib/admin";
-import {
-  calculateRebindCooldown,
-  getDeviceRebindConfig
-} from "@/lib/device-rebind-config";
+import { getDeviceRebindStatus } from "@/lib/device-rebind-config";
 import { remainingMinutes } from "@/lib/entitlements";
 import { defaultPlanConfigs, planTotalMinutes } from "@/lib/plans";
 import { privacyNoticeVersion } from "@/lib/privacy";
@@ -84,28 +81,37 @@ export async function POST(request: NextRequest) {
   }
 
   if (action === "unbind") {
-    const response = await adminUpdateAccessCode(
-      request,
-      body.id,
-      {
-        device_id: null,
-        current_device_name: null,
-        current_device_model: null,
-        current_device_platform: null,
-        device_bound_at: null
-      },
-      "unbind_device",
-      body.reason
-    );
-    if (response.status < 400 && body.id) {
-      await supabaseAdmin
-        .from("sessions")
-        .update({ session_token: generateSessionToken() })
-        .eq("access_code_id", body.id)
-        .eq("status", "active")
-        .is("end_time", null);
+    const reason = String(body.reason ?? "").trim();
+    if (!reason) {
+      return NextResponse.json({ error: "请填写重置当前激活环境的原因" }, { status: 400 });
     }
-    return response;
+    const { data, error } = await supabaseAdmin.rpc(
+      "admin_reset_device_environment",
+      {
+        p_access_code_id: body.id,
+        p_reason: reason,
+        p_admin: request.headers.get("x-admin-password")
+          ? "ADMIN_PASSWORD"
+          : "unknown",
+        p_request_id: generateSessionToken(),
+        p_new_session_token: generateSessionToken()
+      }
+    );
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+    const result = data as {
+      success?: boolean;
+      message?: string;
+      accessCode?: unknown;
+    };
+    if (!result.success) {
+      return NextResponse.json(
+        { error: result.message ?? "当前激活环境重置失败" },
+        { status: 400 }
+      );
+    }
+    return NextResponse.json({ accessCode: result.accessCode });
   }
 
   if (action === "set-status") {
@@ -208,11 +214,11 @@ async function handleValidateCode(
       ip,
       userAgent,
       eventType: "无效访问码尝试",
-      message: `无效访问码：${code}`
+      message: "无效访问码尝试（访问码已脱敏）"
     });
     await logError({
       errorType: "access_code验证失败",
-      errorMessage: `访问码不存在：${code}`
+      errorMessage: "访问码不存在（访问码已脱敏）"
     });
     return NextResponse.json({ error: "访问码不存在" }, { status: 404 });
   }
@@ -279,34 +285,32 @@ async function handleValidateCode(
   }
 
   if (normalizedCode.device_id && normalizedCode.device_id !== deviceId) {
-    const config = await getDeviceRebindConfig();
-    const cooldown = calculateRebindCooldown({
-      lastRebindAt: normalizedCode.last_rebind_at,
-      cooldownHours: config.rebindCooldownHours
+    const rebindRequired = await getDeviceRebindStatus({
+      accessCodeId: normalizedCode.id,
+      currentDeviceId: normalizedCode.device_id,
+      requestedDeviceId: deviceId
     });
-    const freeRebindCount = Math.max(0, Number(normalizedCode.free_rebind_count ?? 0));
 
     await logSuspicious({
       accessCodeId: normalizedCode.id,
       ip,
       userAgent,
-      eventType: "新设备检测",
-      message: "检测到访问码正在从另一台设备尝试进入"
+      eventType: "新使用环境检测",
+      message: JSON.stringify({
+        requestedEnvironmentId: deviceId,
+        requestedEnvironmentName: String(deviceName ?? "").trim().slice(0, 120) || null,
+        requestedEnvironmentModel: String(deviceModel ?? "").trim().slice(0, 120) || null,
+        requestedEnvironmentPlatform:
+          String(devicePlatform ?? "").trim().slice(0, 20) || null,
+        ...rebindRequired
+      })
     });
 
     return NextResponse.json(
       {
-        error: "检测到新的设备",
-        code: "device_rebind_required",
-        rebindRequired: {
-          freeRebindCount,
-          remainingMinutes: totalRemainingMinutes,
-          costMinutes: config.rebindCostMinutes,
-          cooldownHours: config.rebindCooldownHours,
-          cooldownRemainingSeconds: cooldown.cooldownRemainingSeconds,
-          nextRebindAt: cooldown.nextRebindAt,
-          isFree: freeRebindCount > 0
-        }
+        error: "检测到新的使用环境",
+        code: "rebind_required",
+        rebindRequired
       },
       { status: 409 }
     );
@@ -350,27 +354,16 @@ async function handleValidateCode(
         return NextResponse.json({ error: reloadError.message }, { status: 500 });
       }
       if (concurrentlyBoundCode.device_id !== deviceId) {
-        const config = await getDeviceRebindConfig();
-        const cooldown = calculateRebindCooldown({
-          lastRebindAt: concurrentlyBoundCode.last_rebind_at,
-          cooldownHours: config.rebindCooldownHours
+        const rebindRequired = await getDeviceRebindStatus({
+          accessCodeId: concurrentlyBoundCode.id,
+          currentDeviceId: concurrentlyBoundCode.device_id,
+          requestedDeviceId: deviceId
         });
         return NextResponse.json(
           {
-            error: "检测到新的设备",
-            code: "device_rebind_required",
-            rebindRequired: {
-              freeRebindCount: Math.max(
-                0,
-                Number(concurrentlyBoundCode.free_rebind_count ?? 0)
-              ),
-              remainingMinutes: totalRemainingMinutes,
-              costMinutes: config.rebindCostMinutes,
-              cooldownHours: config.rebindCooldownHours,
-              cooldownRemainingSeconds: cooldown.cooldownRemainingSeconds,
-              nextRebindAt: cooldown.nextRebindAt,
-              isFree: Number(concurrentlyBoundCode.free_rebind_count ?? 0) > 0
-            }
+            error: "检测到新的使用环境",
+            code: "rebind_required",
+            rebindRequired
           },
           { status: 409 }
         );

@@ -1,9 +1,11 @@
+import { evaluateDeviceRebindPolicy } from "@/lib/device-rebind-policy";
 import { supabaseAdmin } from "@/lib/supabase/server";
-import type { DeviceRebindConfig } from "@/types";
+import type { DeviceRebindConfig, DeviceRebindRequired } from "@/types";
 
 export const defaultDeviceRebindConfig: DeviceRebindConfig = {
-  rebindCostMinutes: 30,
-  rebindCooldownHours: 24,
+  rebindWindowDays: 15,
+  rebindMaxCount: 10,
+  rebindMinIntervalSeconds: 60,
   updatedAt: null,
   source: "default"
 };
@@ -21,13 +23,29 @@ export async function getDeviceRebindConfig(): Promise<DeviceRebindConfig> {
     if (error || !data) return defaultDeviceRebindConfig;
 
     return {
-      rebindCostMinutes: Math.max(
-        1,
-        Number(data.rebind_cost_minutes ?? defaultDeviceRebindConfig.rebindCostMinutes)
+      rebindWindowDays: Math.min(
+        90,
+        Math.max(
+          1,
+          Number(data.rebind_window_days ?? defaultDeviceRebindConfig.rebindWindowDays)
+        )
       ),
-      rebindCooldownHours: Math.max(
-        0,
-        Number(data.rebind_cooldown_hours ?? defaultDeviceRebindConfig.rebindCooldownHours)
+      rebindMaxCount: Math.min(
+        100,
+        Math.max(
+          1,
+          Number(data.rebind_max_count ?? defaultDeviceRebindConfig.rebindMaxCount)
+        )
+      ),
+      rebindMinIntervalSeconds: Math.min(
+        86_400,
+        Math.max(
+          10,
+          Number(
+            data.rebind_min_interval_seconds ??
+              defaultDeviceRebindConfig.rebindMinIntervalSeconds
+          )
+        )
       ),
       updatedAt: data.updated_at ?? null,
       source: "database"
@@ -37,30 +55,56 @@ export async function getDeviceRebindConfig(): Promise<DeviceRebindConfig> {
   }
 }
 
-export function calculateRebindCooldown(params: {
-  lastRebindAt?: string | null;
-  cooldownHours: number;
-  now?: Date;
-}) {
-  if (!params.lastRebindAt || params.cooldownHours <= 0) {
-    return { cooldownRemainingSeconds: 0, nextRebindAt: null };
+export async function getDeviceRebindStatus(params: {
+  accessCodeId: string;
+  currentDeviceId: string | null;
+  requestedDeviceId: string;
+}): Promise<DeviceRebindRequired> {
+  const config = await getDeviceRebindConfig();
+  const now = new Date();
+  const windowStart = new Date(
+    now.getTime() - config.rebindWindowDays * 24 * 60 * 60 * 1000
+  ).toISOString();
+  const successfulTimes: string[] = [];
+
+  if (supabaseAdmin) {
+    const { data } = await supabaseAdmin
+      .from("device_rebind_logs")
+      .select("created_at")
+      .eq("access_code_id", params.accessCodeId)
+      .eq("action_source", "user")
+      .eq("success", true)
+      .eq("result_code", "rebound")
+      .gt("created_at", windowStart)
+      .order("created_at", { ascending: true });
+
+    for (const row of data ?? []) {
+      if (row.created_at) successfulTimes.push(String(row.created_at));
+    }
   }
 
-  const lastRebindAt = new Date(params.lastRebindAt).getTime();
-  if (!Number.isFinite(lastRebindAt)) {
-    return { cooldownRemainingSeconds: 0, nextRebindAt: null };
-  }
-
-  const nextRebindAt = new Date(
-    lastRebindAt + params.cooldownHours * 60 * 60 * 1000
-  );
-  const remaining = Math.max(
-    0,
-    Math.ceil((nextRebindAt.getTime() - (params.now ?? new Date()).getTime()) / 1000)
-  );
+  const decision = evaluateDeviceRebindPolicy({
+    currentDeviceId: params.currentDeviceId,
+    requestedDeviceId: params.requestedDeviceId,
+    successfulReactivationTimes: successfulTimes,
+    windowDays: config.rebindWindowDays,
+    maxCount: config.rebindMaxCount,
+    minIntervalSeconds: config.rebindMinIntervalSeconds,
+    now
+  });
 
   return {
-    cooldownRemainingSeconds: remaining,
-    nextRebindAt: remaining > 0 ? nextRebindAt.toISOString() : null
+    usedCount: decision.usedCount,
+    maxCount: decision.maxCount,
+    nextCount: decision.nextCount,
+    windowDays: config.rebindWindowDays,
+    minIntervalSeconds: config.rebindMinIntervalSeconds,
+    allowed: decision.allowed,
+    limitReason:
+      decision.result === "rate_limited" ||
+      decision.result === "window_limit_reached"
+        ? decision.result
+        : null,
+    nextAvailableAt: decision.nextAvailableAt
   };
 }

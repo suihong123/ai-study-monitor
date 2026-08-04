@@ -15,6 +15,7 @@ export async function POST(request: NextRequest) {
     .from("sessions")
     .update({ last_active_at: now })
     .eq("id", auth.context.session.id)
+    .eq("session_token", body.sessionToken)
     .eq("status", "active")
     .is("end_time", null)
     .select("id")

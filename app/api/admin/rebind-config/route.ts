@@ -8,7 +8,7 @@ export async function GET(request: NextRequest) {
   if (!isAdminRequest(request)) {
     await logError({
       errorType: "未授权访问",
-      errorMessage: "后台换绑配置接口密码错误或缺失"
+      errorMessage: "后台重新绑定配置接口密码错误或缺失"
     });
     return NextResponse.json({ error: "验证失败" }, { status: 401 });
   }
@@ -20,7 +20,7 @@ export async function POST(request: NextRequest) {
   if (!isAdminRequest(request)) {
     await logError({
       errorType: "未授权访问",
-      errorMessage: "后台换绑配置接口密码错误或缺失"
+      errorMessage: "后台重新绑定配置接口密码错误或缺失"
     });
     return NextResponse.json({ error: "验证失败" }, { status: 401 });
   }
@@ -29,14 +29,33 @@ export async function POST(request: NextRequest) {
   }
 
   const body = await request.json();
-  const rebindCostMinutes = Number(body.rebindCostMinutes);
-  const rebindCooldownHours = Number(body.rebindCooldownHours);
+  const rebindWindowDays = Number(body.rebindWindowDays);
+  const rebindMaxCount = Number(body.rebindMaxCount);
+  const rebindMinIntervalSeconds = Number(body.rebindMinIntervalSeconds);
 
-  if (!Number.isInteger(rebindCostMinutes) || rebindCostMinutes <= 0) {
-    return NextResponse.json({ error: "换绑扣除时长必须是大于0的整数" }, { status: 400 });
+  if (
+    !Number.isInteger(rebindWindowDays) ||
+    rebindWindowDays < 1 ||
+    rebindWindowDays > 90
+  ) {
+    return NextResponse.json({ error: "滚动窗口天数必须是1–90的整数" }, { status: 400 });
   }
-  if (!Number.isInteger(rebindCooldownHours) || rebindCooldownHours < 0) {
-    return NextResponse.json({ error: "换绑冷却小时必须是非负整数" }, { status: 400 });
+  if (
+    !Number.isInteger(rebindMaxCount) ||
+    rebindMaxCount < 1 ||
+    rebindMaxCount > 100
+  ) {
+    return NextResponse.json({ error: "重新绑定上限必须是1–100的整数" }, { status: 400 });
+  }
+  if (
+    !Number.isInteger(rebindMinIntervalSeconds) ||
+    rebindMinIntervalSeconds < 10 ||
+    rebindMinIntervalSeconds > 86_400
+  ) {
+    return NextResponse.json(
+      { error: "最小操作间隔必须是10–86400秒的整数" },
+      { status: 400 }
+    );
   }
 
   const before = await getDeviceRebindConfig();
@@ -45,8 +64,9 @@ export async function POST(request: NextRequest) {
     .from("device_rebind_configs")
     .upsert({
       id: true,
-      rebind_cost_minutes: rebindCostMinutes,
-      rebind_cooldown_hours: rebindCooldownHours,
+      rebind_window_days: rebindWindowDays,
+      rebind_max_count: rebindMaxCount,
+      rebind_min_interval_seconds: rebindMinIntervalSeconds,
       updated_at: updatedAt
     })
     .select("*")
@@ -57,8 +77,9 @@ export async function POST(request: NextRequest) {
   }
 
   const rebindConfig = {
-    rebindCostMinutes: Number(data.rebind_cost_minutes),
-    rebindCooldownHours: Number(data.rebind_cooldown_hours),
+    rebindWindowDays: Number(data.rebind_window_days),
+    rebindMaxCount: Number(data.rebind_max_count),
+    rebindMinIntervalSeconds: Number(data.rebind_min_interval_seconds),
     updatedAt: data.updated_at,
     source: "database" as const
   };
@@ -69,7 +90,7 @@ export async function POST(request: NextRequest) {
     action_type: "update_device_rebind_config",
     before_data: before,
     after_data: rebindConfig,
-    reason: "更新设备换绑规则"
+    reason: "更新使用环境重新绑定规则"
   });
 
   return NextResponse.json({ rebindConfig });

@@ -47,13 +47,14 @@ export type AccessCode = {
   base_interval_seconds: number;
   min_interval_seconds: number;
   device_id: string | null;
-  free_rebind_count: number;
   last_rebind_at: string | null;
   rebind_total: number;
   current_device_name: string | null;
   current_device_model: string | null;
   current_device_platform: string | null;
   device_bound_at: string | null;
+  reactivation_flagged_at: string | null;
+  reactivation_flag_reason: string | null;
   status: AccessCodeStatus;
   freeze_reason: string | null;
   admin_notes: string | null;
@@ -72,20 +73,22 @@ export type DeviceInfo = {
 };
 
 export type DeviceRebindConfig = {
-  rebindCostMinutes: number;
-  rebindCooldownHours: number;
+  rebindWindowDays: number;
+  rebindMaxCount: number;
+  rebindMinIntervalSeconds: number;
   updatedAt: string | null;
   source: "database" | "default";
 };
 
 export type DeviceRebindRequired = {
-  freeRebindCount: number;
-  remainingMinutes: number;
-  costMinutes: number;
-  cooldownHours: number;
-  cooldownRemainingSeconds: number;
-  nextRebindAt: string | null;
-  isFree: boolean;
+  usedCount: number;
+  maxCount: number;
+  nextCount: number;
+  windowDays: number;
+  minIntervalSeconds: number;
+  allowed: boolean;
+  limitReason: "rate_limited" | "window_limit_reached" | null;
+  nextAvailableAt: string | null;
 };
 
 export type DeviceRebindResult = {
@@ -94,20 +97,21 @@ export type DeviceRebindResult = {
     | "invalid_request"
     | "access_code_not_found"
     | "access_code_unavailable"
-    | "first_bound"
-    | "already_bound"
-    | "cooldown_active"
-    | "insufficient_minutes"
+    | "first_activated"
+    | "already_active"
+    | "rate_limited"
+    | "window_limit_reached"
     | "rebound"
     | "server_error";
   message: string;
-  freeRebindCount: number;
-  remainingMinutes: number;
-  cooldownRemainingSeconds: number;
-  nextRebindAt?: string | null;
-  costMinutes: number;
-  deductedMinutes: number;
-  isFree?: boolean;
+  usedCount: number;
+  maxCount: number;
+  nextCount: number;
+  windowDays: number;
+  minIntervalSeconds: number;
+  allowed: boolean;
+  limitReason?: "rate_limited" | "window_limit_reached" | string | null;
+  nextAvailableAt?: string | null;
   replayed?: boolean;
 };
 

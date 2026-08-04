@@ -26,13 +26,9 @@ function cleanText(value: unknown, maxLength: number) {
 function statusForResult(result: DeviceRebindResult) {
   if (result.success) return 200;
   if (result.resultCode === "access_code_not_found") return 404;
-  if (result.resultCode === "cooldown_active") return 409;
-  if (
-    result.resultCode === "access_code_unavailable" ||
-    result.resultCode === "insufficient_minutes"
-  ) {
-    return 403;
-  }
+  if (result.resultCode === "rate_limited") return 429;
+  if (result.resultCode === "window_limit_reached") return 429;
+  if (result.resultCode === "access_code_unavailable") return 403;
   return 400;
 }
 
@@ -43,16 +39,6 @@ export async function POST(request: NextRequest) {
 
   const ip = getClientIp(request);
   const userAgent = getUserAgent(request);
-  const ipLimit = await checkRateLimit({
-    request,
-    kind: "rebind",
-    accessCodeId: null,
-    scope: "ip"
-  });
-  if (!ipLimit.ok) {
-    return NextResponse.json({ error: "换绑请求过于频繁，请稍后再试" }, { status: 429 });
-  }
-
   const body = await request.json();
   const accessCode = cleanText(body.code, 64).toUpperCase();
   const deviceId = cleanText(body.deviceId, 128);
@@ -66,7 +52,7 @@ export async function POST(request: NextRequest) {
 
   if (!accessCode || !deviceId || idempotencyKey.length < 8) {
     return NextResponse.json(
-      { error: "换绑请求信息不完整", code: "invalid_request" },
+      { error: "重新绑定请求信息不完整", code: "invalid_request" },
       { status: 400 }
     );
   }
@@ -85,6 +71,54 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: codeError.message }, { status: 500 });
   }
 
+  // 幂等重放必须先于应用层限流。同一请求即使第一次响应丢失，
+  // 也应直接复用数据库保存的原结果，不能被后续重试次数误伤。
+  if (codeRow?.id) {
+    const { data: replayLog, error: replayError } = await supabaseAdmin
+      .from("device_rebind_logs")
+      .select("response_payload")
+      .eq("access_code_id", codeRow.id)
+      .eq("idempotency_key", idempotencyKey)
+      .maybeSingle();
+
+    if (replayError) {
+      await logError({
+        accessCodeId: codeRow.id,
+        errorType: "DEVICE_REBOUND",
+        errorMessage: replayError.message
+      });
+      return NextResponse.json(
+        { error: "重新绑定失败，请稍后再试", code: "server_error" },
+        { status: 500 }
+      );
+    }
+
+    if (replayLog?.response_payload) {
+      const replayedResult = {
+        ...(replayLog.response_payload as unknown as DeviceRebindResult),
+        replayed: true
+      };
+      return NextResponse.json(
+        {
+          ...replayedResult,
+          error: replayedResult.success ? undefined : replayedResult.message,
+          code: replayedResult.resultCode
+        },
+        { status: statusForResult(replayedResult) }
+      );
+    }
+  }
+
+  const ipLimit = await checkRateLimit({
+    request,
+    kind: "rebind",
+    accessCodeId: null,
+    scope: "ip"
+  });
+  if (!ipLimit.ok) {
+    return NextResponse.json({ error: "操作过于频繁，请稍后再试" }, { status: 429 });
+  }
+
   if (codeRow?.id) {
     const codeLimit = await checkRateLimit({
       request,
@@ -93,7 +127,7 @@ export async function POST(request: NextRequest) {
       scope: "accessCode"
     });
     if (!codeLimit.ok) {
-      return NextResponse.json({ error: "换绑请求过于频繁，请稍后再试" }, { status: 429 });
+      return NextResponse.json({ error: "操作过于频繁，请稍后再试" }, { status: 429 });
     }
     await settleExpiredSessionsForAccessCode(codeRow.id);
   }
@@ -117,7 +151,7 @@ export async function POST(request: NextRequest) {
       errorMessage: error.message
     });
     return NextResponse.json(
-      { error: "设备更换失败，请稍后再试", code: "server_error" },
+      { error: "重新绑定失败，请稍后再试", code: "server_error" },
       { status: 500 }
     );
   }
@@ -128,8 +162,8 @@ export async function POST(request: NextRequest) {
     await logSuspicious({
       ip,
       userAgent,
-      eventType: "DEVICE_REBOUND",
-      message: "无效访问码换绑尝试"
+      eventType: "使用环境重新绑定",
+      message: "无效访问码重新绑定尝试"
     });
   }
 
