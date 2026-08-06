@@ -12,7 +12,7 @@
 - [迭代与优化前复盘机制](docs/ITERATION_PLAYBOOK.md)
 - [历次复盘记录](docs/reviews/README.md)
 
-当前基线日期为 2026-08-04，生产代码为 `98088ff`（v0.8），已部署至 `www.aistudyguard.top`。v0.9 使用环境重新绑定及监督请求隔离已完成功能、自动化、隔离/托管 PostgreSQL、Preview 和核心真机验收，5 个 P1 发布门禁已关闭，Release Candidate 待提交审核；尚未执行生产迁移、推送或部署。代码和部署只能证明产品能力，不能证明用户、收入、转化或留存；这些经营数据目前统一标记为待补充。
+当前基线日期为 2026-08-06，生产代码为 `68ed8d4`（v0.9），已部署并通过生产数据库迁移、真实 Qwen、重新绑定、恢复监督、计时、报告和最终真机烟雾验收。v0.9.1 只新增 Supabase Free Plan 每日只读保活，已通过 Preview 鉴权、真实只读查询和零业务写入验证，并已获 Production 发布确认。代码和部署只能证明产品能力，不能证明用户、收入、转化或留存；这些经营数据目前统一标记为待补充。
 
 ## 已实现范围
 
@@ -24,7 +24,7 @@
 - 结束监督后写入 `sessions`、`records`，扣减访问码时长
 - 所有套餐暂时统一生成基于真实记录统计的基础报告
 - 访问码单浏览器环境激活和永久有效的总时长权益
-- v0.9 本地开发版支持任意连续 15 天最多 10 次免费重新激活，两次成功至少间隔 60 秒
+- v0.9 生产版支持任意连续 15 天最多 10 次免费重新激活，两次成功至少间隔 60 秒
 - `/admin` 后台创建访问码、查看额度与记录、调整状态，以及管理使用环境重新激活
 
 ## 套餐
@@ -57,6 +57,7 @@
 - `POST /api/client-error`：记录摄像头权限等前端错误
 - `GET/POST /api/admin/model-config`：后台查看和更新视觉模型配置
 - `GET/POST /api/admin/rebind-config`：后台查看和更新重新激活滚动规则
+- `GET /api/cron/keep-alive`：Vercel Cron 专用 Supabase 只读保活，需 `CRON_SECRET`
 
 ## Supabase 建表
 
@@ -135,6 +136,7 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=你的Supabase anon key
 SUPABASE_URL=你的Supabase项目URL
 SUPABASE_SERVICE_ROLE_KEY=你的Supabase service role key
 ADMIN_PASSWORD=后台管理密码
+CRON_SECRET=Vercel Cron 专用随机密钥
 QWEN_API_KEY=Qwen服务端密钥
 QWEN_API_URL=Qwen接口地址
 QWEN_MODEL=Qwen模型名
@@ -147,9 +149,17 @@ DEEPSEEK_API_KEY=预留的DeepSeek服务端密钥
 - 浏览器不直接读写 Supabase 表。
 - API Routes 使用 `SUPABASE_SERVICE_ROLE_KEY` 写入访问码、会话和记录。
 - `ADMIN_PASSWORD` 用于保护 `/admin` 的接口操作。
+- `CRON_SECRET` 仅用于 Vercel Cron 的 Bearer 鉴权；缺失或不匹配时保活接口返回 401。
 - AI API Key 只能放在服务端环境变量里，不得写入前端代码。
 - `ANALYZE_MODE` 默认为 `mock`；设置为 `qwen` 时尝试调用 Qwen-VL，Qwen 环境变量缺失会自动回退 Mock 并写入错误日志。
 - 后台“视觉模型配置”会优先于 `ANALYZE_MODE`、`QWEN_API_URL`、`QWEN_MODEL` 生效；如果未执行模型配置迁移或未配置后台模型，则自动回退环境变量。
+
+## v0.9.1 Supabase 只读保活
+
+- Vercel 每天 UTC 19:00（北京时间约 03:00）请求一次 `/api/cron/keep-alive`。
+- 接口仅执行 `access_codes.select("id").limit(1)`，不返回查询结果。
+- 接口不写访问码、分钟、会话、识别、AI 日志、报告或任何其他业务数据。
+- Vercel Hobby Cron 可能在指定小时内分散执行；本功能只要求每天一次，不依赖精确分钟。
 
 ## 后台使用
 
