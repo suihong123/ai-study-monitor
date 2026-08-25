@@ -6,6 +6,7 @@
 
 | 日期 | 主题 | 状态 | 结论 |
 | --- | --- | --- | --- |
+| 2026-08-25 | [Study Admin × Hostel License 只读管理](2026-08-25-hostel-admin-readonly.md) | 进行中 | 生产只读基线正常；仅实施独立 Hostel SELECT API、Hash 搜索和隔离 UI，等待 Preview 验收 |
 | 2026-08-06 | [Supabase Free Plan 每日只读保活](2026-08-06-supabase-keep-alive.md) | 已完成 | 每日只读保活通过 Preview 鉴权、真实查询和零业务写入验证；尚未部署 Production |
 | 2026-08-04 | [v0.9 Release Candidate 整理](2026-08-04-v09-release-candidate.md) | 已完成 | 5 个 P1 门禁已关闭；依赖风险获本次发布接受，未提交、未推送、未部署 |
 | 2026-07-30 | [监督请求取消与旧响应隔离](2026-07-30-supervision-request-cancellation.md) | 已完成 | 请求取消、前后端旧响应隔离和数据库门禁通过；Qwen 上游 Abort 立即断开无法实机证明，已接受为非阻断 Known Limitation |

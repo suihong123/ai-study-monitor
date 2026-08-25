@@ -2,6 +2,8 @@
 
 import { FormEvent, Fragment, useEffect, useState } from "react";
 import type { ReactNode } from "react";
+import dynamic from "next/dynamic";
+import HostelAdminErrorBoundary from "@/app/admin/_components/HostelAdminErrorBoundary";
 import type { AccessCode, AccessCodeStatus, PlanType } from "@/types";
 import { statusLabels } from "@/lib/access-code-status";
 import { defaultQwenApiUrl, visionModelOptions } from "@/lib/model-options";
@@ -159,6 +161,8 @@ type AdminSectionKey =
   | "model"
   | "actions";
 
+type AdminProduct = "study" | "hostel";
+
 const planLabels: Record<PlanType, string> = {
   trial: "2小时体验版",
   basic_monthly: "月卡（60小时，永久有效）",
@@ -208,8 +212,21 @@ const adminSections: Array<{ key: AdminSectionKey; title: string; description: s
   { key: "actions", title: "操作日志", description: "查看后台运营操作记录" }
 ];
 
+const HostelAdminPanel = dynamic(
+  () => import("@/app/admin/_components/HostelAdminPanel"),
+  {
+    ssr: false,
+    loading: () => (
+      <section className="rounded-md border border-line bg-white p-5 text-sm text-muted">
+        AI民宿只读面板加载中…
+      </section>
+    )
+  }
+);
+
 export default function AdminPage() {
   const [password, setPassword] = useState("");
+  const [hostelAdminPassword, setHostelAdminPassword] = useState("");
   const [isVerified, setIsVerified] = useState(false);
   const [planType, setPlanType] = useState<PlanType>("trial");
   const [overview, setOverview] = useState<AdminOverview>({});
@@ -217,6 +234,7 @@ export default function AdminPage() {
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
   const [lockedUntil, setLockedUntil] = useState(0);
+  const [activeProduct, setActiveProduct] = useState<AdminProduct>("study");
   const [activeSection, setActiveSection] = useState<AdminSectionKey>("overview");
   const [accessCodeSearch, setAccessCodeSearch] = useState("");
   const [accessStatusFilter, setAccessStatusFilter] = useState<"all" | AccessCodeStatus>("all");
@@ -296,6 +314,7 @@ export default function AdminPage() {
       window.sessionStorage.removeItem("admin_locked_until");
       setLockedUntil(0);
       setIsVerified(true);
+      setHostelAdminPassword(password);
       setOverview(result);
       syncModelForm(result.modelConfig);
       syncRebindForm(result.rebindConfig);
@@ -573,6 +592,46 @@ export default function AdminPage() {
         </div>
       </div>
 
+      <section className="mb-5 rounded-md border border-line bg-white p-2">
+        <div className="grid grid-cols-2 gap-2" role="tablist" aria-label="管理产品">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeProduct === "study"}
+            onClick={() => setActiveProduct("study")}
+            className={`rounded-md px-4 py-3 text-left transition ${
+              activeProduct === "study"
+                ? "bg-ink text-white"
+                : "text-ink hover:bg-panel"
+            }`}
+          >
+            <div className="font-semibold">AI学习监督</div>
+            <div className={`mt-1 text-xs ${activeProduct === "study" ? "text-white/75" : "text-muted"}`}>
+              访问码、监督、成本和模型
+            </div>
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeProduct === "hostel"}
+            onClick={() => {
+              setActiveProduct("hostel");
+              if (password) setHostelAdminPassword(password);
+            }}
+            className={`rounded-md px-4 py-3 text-left transition ${
+              activeProduct === "hostel"
+                ? "bg-ink text-white"
+                : "text-ink hover:bg-panel"
+            }`}
+          >
+            <div className="font-semibold">AI民宿</div>
+            <div className={`mt-1 text-xs ${activeProduct === "hostel" ? "text-white/75" : "text-muted"}`}>
+              License 库存与激活设备（只读）
+            </div>
+          </button>
+        </div>
+      </section>
+
       <section className="mb-5 rounded-md border border-line bg-white p-4">
         <label className="block text-sm font-medium" htmlFor="password">
           ADMIN_PASSWORD
@@ -586,22 +645,34 @@ export default function AdminPage() {
             className="h-11 flex-1 rounded-md border border-line px-3 outline-none focus:border-brand"
             placeholder="请输入后台密码"
           />
-          <button
-            onClick={() => void loadAdmin()}
-            className="h-11 rounded-md bg-brand px-4 font-semibold text-white"
-          >
-            刷新看板
-          </button>
+          {activeProduct === "study" ? (
+            <button
+              onClick={() => void loadAdmin()}
+              className="h-11 rounded-md bg-brand px-4 font-semibold text-white"
+            >
+              刷新看板
+            </button>
+          ) : (
+            <button
+              type="button"
+              disabled={!password}
+              onClick={() => setHostelAdminPassword(password)}
+              className="h-11 rounded-md bg-brand px-4 font-semibold text-white disabled:opacity-60"
+            >
+              读取 AI民宿只读数据
+            </button>
+          )}
         </div>
       </section>
 
-      {message && (
+      {activeProduct === "study" && message && (
         <div className="mb-4 rounded-md border border-line bg-white p-3 text-sm">
           {message}
         </div>
       )}
 
-      <div className="grid gap-5 lg:grid-cols-[260px_1fr]">
+      {activeProduct === "study" ? (
+        <div className="grid gap-5 lg:grid-cols-[260px_1fr]">
         <aside className="lg:sticky lg:top-4 lg:self-start">
           <nav className="rounded-md border border-line bg-white p-2">
             {adminSections.map((section) => (
@@ -1269,7 +1340,12 @@ export default function AdminPage() {
 
           {activeSection === "actions" && <LogSection title="后台操作日志" rows={overview.adminActions ?? []} />}
         </div>
-      </div>
+        </div>
+      ) : (
+        <HostelAdminErrorBoundary>
+          <HostelAdminPanel adminPassword={hostelAdminPassword} />
+        </HostelAdminErrorBoundary>
+      )}
     </main>
   );
 }
