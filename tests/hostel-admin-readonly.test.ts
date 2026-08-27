@@ -118,6 +118,7 @@ describe("Hostel Admin authorization", () => {
 
 describe("Hostel effective status and overview", () => {
   it("按统一优先级计算 effectiveStatus", () => {
+    expect(getEffectiveHostelLicenseStatus("unused", null, now)).toBe("unused");
     expect(getEffectiveHostelLicenseStatus("unused", future, now)).toBe("unused");
     expect(getEffectiveHostelLicenseStatus("activated", future, now)).toBe(
       "activated"
@@ -125,12 +126,20 @@ describe("Hostel effective status and overview", () => {
     expect(getEffectiveHostelLicenseStatus("unused", past, now)).toBe("expired");
     expect(getEffectiveHostelLicenseStatus("expired", future, now)).toBe("expired");
     expect(getEffectiveHostelLicenseStatus("revoked", past, now)).toBe("revoked");
+    expect(getEffectiveHostelLicenseStatus("revoked", null, now)).toBe("revoked");
+    expect(() =>
+      getEffectiveHostelLicenseStatus("activated", null, now)
+    ).toThrow("invalid_database_value");
+    expect(() => getEffectiveHostelLicenseStatus("expired", null, now)).toThrow(
+      "invalid_database_value"
+    );
   });
 
   it("Overview 使用 effectiveStatus 而非原始 status", () => {
     expect(
       buildHostelLicenseOverview(
         [
+          { status: "unused", expires_at: null },
           { status: "unused", expires_at: future },
           { status: "activated", expires_at: future },
           { status: "unused", expires_at: past },
@@ -140,8 +149,8 @@ describe("Hostel effective status and overview", () => {
         now
       )
     ).toEqual({
-      total: 5,
-      unused: 1,
+      total: 6,
+      unused: 2,
       activated: 1,
       expired: 2,
       revoked: 1,
@@ -209,6 +218,37 @@ describe("Hostel DTO whitelist and activations", () => {
     });
     expect(JSON.stringify(dto)).not.toContain("owner_id");
     expect(JSON.stringify(dto)).not.toContain("key_hash");
+  });
+
+  it("unused License 的 nullable 到期时间安全通过 DTO", () => {
+    const dto = toHostelLicenseListItemDTO(
+      licenseRow({ expires_at: null }),
+      0,
+      now
+    );
+    expect(dto.status).toBe("unused");
+    expect(dto.expiresAt).toBeNull();
+  });
+
+  it("Admin 对 unused + NULL 使用统一说明且筛选兼容新旧库存", () => {
+    const panelSource = readFileSync(
+      resolve(process.cwd(), "app/admin/_components/HostelAdminPanel.tsx"),
+      "utf8"
+    );
+    const repositorySource = readFileSync(
+      resolve(process.cwd(), "lib/hostel-admin/repository.ts"),
+      "utf8"
+    );
+    expect(panelSource).toContain('return "首次激活后开始计算"');
+    expect(panelSource).toContain(
+      "formatLicenseExpiry(license.status, license.expiresAt)"
+    );
+    expect(panelSource).toContain(
+      "formatLicenseExpiry(detail.status, detail.expiresAt)"
+    );
+    expect(repositorySource).toContain(
+      "expires_at.is.null,expires_at.gt.${nowIso}"
+    );
   });
 
   it("Activation DTO 不返回设备 Hash，并正确区分绑定与可用", () => {

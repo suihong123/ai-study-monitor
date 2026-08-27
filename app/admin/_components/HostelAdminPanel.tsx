@@ -46,6 +46,19 @@ function formatDate(value?: string | null) {
   return new Date(value).toLocaleString("zh-CN");
 }
 
+function formatLicenseExpiry(
+  status: HostelLicenseStatus,
+  expiresAt: string | null
+) {
+  if (status === "unused" && expiresAt === null) {
+    return "首次激活后开始计算";
+  }
+  if (status === "revoked" && expiresAt === null) {
+    return "尚未开始计时";
+  }
+  return formatDate(expiresAt);
+}
+
 function safeErrorMessage(status: number, fallback: string) {
   if (status === 401) return "管理员认证已失效，请重新输入后台密码。";
   if (status === 404) return "未找到对应 License。";
@@ -378,7 +391,9 @@ export default function HostelAdminPanel({
                   <td className="p-3">
                     {license.activeActivationCount}/{license.maxActivations}
                   </td>
-                  <td className="p-3">{formatDate(license.expiresAt)}</td>
+                  <td className="p-3">
+                    {formatLicenseExpiry(license.status, license.expiresAt)}
+                  </td>
                   <td className="p-3">{formatDate(license.createdAt)}</td>
                   <td className="p-3">{formatDate(license.updatedAt)}</td>
                   <td className="p-3">
@@ -461,7 +476,10 @@ export default function HostelAdminPanel({
                   label="当前可用设备"
                   value={String(detail.usableActivationCount)}
                 />
-                <DetailItem label="到期时间" value={formatDate(detail.expiresAt)} />
+                <DetailItem
+                  label="到期时间"
+                  value={formatLicenseExpiry(detail.status, detail.expiresAt)}
+                />
                 <DetailItem label="创建时间" value={formatDate(detail.createdAt)} />
                 <DetailItem label="更新时间" value={formatDate(detail.updatedAt)} />
               </div>

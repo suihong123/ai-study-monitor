@@ -23,7 +23,7 @@ export interface HostelLicenseListItemDTO {
   plan: "commercial";
   maxActivations: number;
   activeActivationCount: number;
-  expiresAt: string;
+  expiresAt: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -58,7 +58,7 @@ export interface HostelLicenseRow {
   status: string;
   plan: string;
   max_activations: number;
-  expires_at: string;
+  expires_at: string | null;
   created_at: string;
   updated_at: string;
 }

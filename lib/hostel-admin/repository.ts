@@ -50,13 +50,13 @@ function assertLicenseRow(value: unknown): HostelLicenseRow {
     typeof row.status !== "string" ||
     typeof row.plan !== "string" ||
     typeof row.max_activations !== "number" ||
-    typeof row.expires_at !== "string" ||
+    !(typeof row.expires_at === "string" || row.expires_at === null) ||
     typeof row.created_at !== "string" ||
     typeof row.updated_at !== "string"
   ) {
     throw new HostelAdminRepositoryError("invalid_database_value");
   }
-  assertDate(row.expires_at);
+  if (row.expires_at !== null) assertDate(row.expires_at);
   assertDate(row.created_at);
   assertDate(row.updated_at);
   return row as HostelLicenseRow;
@@ -89,13 +89,18 @@ export function isHostelLicenseStatus(value: string): value is HostelLicenseStat
 
 export function getEffectiveHostelLicenseStatus(
   status: string,
-  expiresAt: string,
+  expiresAt: string | null,
   now = new Date()
 ): HostelLicenseStatus {
   if (!isHostelLicenseStatus(status)) {
     throw new HostelAdminRepositoryError("invalid_database_value");
   }
   if (status === "revoked") return "revoked";
+  if (expiresAt === null) {
+    if (status === "unused") return "unused";
+    throw new HostelAdminRepositoryError("invalid_database_value");
+  }
+  assertDate(expiresAt);
   if (status === "expired" || Date.parse(expiresAt) <= now.getTime()) {
     return "expired";
   }
@@ -115,11 +120,7 @@ export function buildHostelLicenseOverview(
     generatedAt: now.toISOString()
   };
   for (const row of rows) {
-    const status = getEffectiveHostelLicenseStatus(
-      row.status,
-      assertDate(row.expires_at),
-      now
-    );
+    const status = getEffectiveHostelLicenseStatus(row.status, row.expires_at, now);
     overview[status] += 1;
   }
   return overview;
@@ -291,9 +292,13 @@ export async function getHostelLicenseOverview(
   if (error) throw databaseReadFailed();
   const rows = (data ?? []).map((value) => {
     const row = value as { status?: unknown; expires_at?: unknown };
-    if (typeof row.status !== "string" || typeof row.expires_at !== "string") {
+    if (
+      typeof row.status !== "string" ||
+      !(typeof row.expires_at === "string" || row.expires_at === null)
+    ) {
       throw new HostelAdminRepositoryError("invalid_database_value");
     }
+    if (row.expires_at !== null) assertDate(row.expires_at);
     return { status: row.status, expires_at: row.expires_at };
   });
   return buildHostelLicenseOverview(rows, now);
@@ -328,8 +333,12 @@ export async function listHostelLicenses(
     query = query
       .neq("status", "revoked")
       .or(`status.eq.expired,expires_at.lte.${nowIso}`);
-  } else if (status === "unused" || status === "activated") {
-    query = query.eq("status", status).gt("expires_at", nowIso);
+  } else if (status === "unused") {
+    query = query
+      .eq("status", "unused")
+      .or(`expires_at.is.null,expires_at.gt.${nowIso}`);
+  } else if (status === "activated") {
+    query = query.eq("status", "activated").gt("expires_at", nowIso);
   }
 
   if (options.cursor) {
