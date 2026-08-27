@@ -9,7 +9,7 @@ import {
   getHostelLicenseDetail,
   hostelRepositoryErrorCode
 } from "@/lib/hostel-admin/repository";
-import { supabaseAdmin } from "@/lib/supabase/server";
+import { hostelAdminSupabase } from "@/lib/hostel-admin/supabase";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -21,12 +21,12 @@ export async function GET(
   if (!requireHostelAdmin(request)) {
     return hostelAdminJson({ error: "unauthorized" }, 401);
   }
-  if (!supabaseAdmin) {
+  if (!hostelAdminSupabase) {
     return hostelAdminJson({ error: "service_unavailable" }, 500);
   }
   try {
     const license = await getHostelLicenseDetail(
-      supabaseAdmin,
+      hostelAdminSupabase,
       context.params.licenseId
     );
     if (!license) {

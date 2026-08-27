@@ -10,7 +10,7 @@ import {
   listHostelLicenses
 } from "@/lib/hostel-admin/repository";
 import type { HostelLicenseStatusFilter } from "@/lib/hostel-admin/types";
-import { supabaseAdmin } from "@/lib/supabase/server";
+import { hostelAdminSupabase } from "@/lib/hostel-admin/supabase";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -19,7 +19,7 @@ export async function GET(request: NextRequest) {
   if (!requireHostelAdmin(request)) {
     return hostelAdminJson({ error: "unauthorized" }, 401);
   }
-  if (!supabaseAdmin) {
+  if (!hostelAdminSupabase) {
     return hostelAdminJson({ error: "service_unavailable" }, 500);
   }
 
@@ -30,7 +30,7 @@ export async function GET(request: NextRequest) {
     "all") as HostelLicenseStatusFilter;
 
   try {
-    const page = await listHostelLicenses(supabaseAdmin, {
+    const page = await listHostelLicenses(hostelAdminSupabase, {
       pageSize,
       cursor,
       status

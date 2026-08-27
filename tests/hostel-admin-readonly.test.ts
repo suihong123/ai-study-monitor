@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { NextRequest } from "next/server";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { isAdminRequest } from "@/lib/admin";
 import {
   hashHostelLicenseKey,
@@ -106,6 +106,9 @@ describe("Hostel Admin authorization", () => {
     for (const file of routeFiles) {
       const source = readFileSync(resolve(process.cwd(), file), "utf8");
       expect(source).toContain("requireHostelAdmin(request)");
+      expect(source).toContain("hostelAdminSupabase");
+      expect(source).toContain("@/lib/hostel-admin/supabase");
+      expect(source).not.toContain("@/lib/supabase/server");
       expect(source).not.toContain('select("*")');
     }
     const httpSource = readFileSync(
@@ -113,6 +116,36 @@ describe("Hostel Admin authorization", () => {
       "utf8"
     );
     expect(httpSource).toContain('"Cache-Control": "private, no-store, max-age=0"');
+
+    const supabaseSource = readFileSync(
+      resolve(process.cwd(), "lib/hostel-admin/supabase.ts"),
+      "utf8"
+    );
+    expect(supabaseSource).toContain('cache: "no-store"');
+    expect(supabaseSource).toContain("global: { fetch: hostelAdminNoStoreFetch }");
+  });
+
+  it("Hostel Admin Supabase 客户端强制覆盖底层 fetch 缓存策略", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const { hostelAdminNoStoreFetch } = await import(
+        "@/lib/hostel-admin/supabase"
+      );
+      await hostelAdminNoStoreFetch("https://example.test/rest/v1/hostel_licenses", {
+        cache: "force-cache",
+        headers: { accept: "application/json" }
+      });
+      expect(fetchMock).toHaveBeenCalledWith(
+        "https://example.test/rest/v1/hostel_licenses",
+        expect.objectContaining({
+          cache: "no-store",
+          headers: { accept: "application/json" }
+        })
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
 

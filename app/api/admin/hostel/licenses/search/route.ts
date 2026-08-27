@@ -9,7 +9,7 @@ import {
   hostelRepositoryErrorCode,
   searchHostelLicenseByHash
 } from "@/lib/hostel-admin/repository";
-import { supabaseAdmin } from "@/lib/supabase/server";
+import { hostelAdminSupabase } from "@/lib/hostel-admin/supabase";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -18,7 +18,7 @@ export async function POST(request: NextRequest) {
   if (!requireHostelAdmin(request)) {
     return hostelAdminJson({ error: "unauthorized" }, 401);
   }
-  if (!supabaseAdmin) {
+  if (!hostelAdminSupabase) {
     return hostelAdminJson({ error: "service_unavailable" }, 500);
   }
 
@@ -43,7 +43,7 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const license = await searchHostelLicenseByHash(supabaseAdmin, keyHash);
+    const license = await searchHostelLicenseByHash(hostelAdminSupabase, keyHash);
     keyHash = "";
     if (!license) {
       return hostelAdminJson({ error: "license_not_found" }, 404);
