@@ -4,7 +4,7 @@ import { calculateElapsedWholeMinutes, remainingMinutes } from "@/lib/entitlemen
 import { supabaseAdmin } from "@/lib/supabase/server";
 import type { AccessCode, AccessCodeStatus, StudySession } from "@/types";
 
-type LimitKey = "analyze" | "report" | "verify";
+type LimitKey = "analyze" | "report" | "verify" | "rebind";
 type SessionContext = {
   session: StudySession & { session_token: string | null; status: string | null };
   accessCode: AccessCode;
@@ -25,6 +25,10 @@ const limitRules = {
   },
   verify: {
     accessCode: 10,
+    ip: 10
+  },
+  rebind: {
+    accessCode: 6,
     ip: 10
   }
 };
@@ -187,7 +191,10 @@ export async function validateSessionRequest(
       ok: false,
       ip,
       userAgent,
-      response: NextResponse.json({ error: "会话无效，请重新开始监督" }, { status: 401 })
+      response: NextResponse.json(
+        { error: "会话无效，请重新开始监督", code: "session_invalid" },
+        { status: 401 }
+      )
     };
   }
 
@@ -198,13 +205,12 @@ export async function validateSessionRequest(
     .eq("access_code_id", body.accessCodeId)
     .maybeSingle();
 
-  if (
-    sessionError ||
-    !session ||
-    session.session_token !== body.sessionToken ||
-    session.end_time ||
-    session.status !== "active"
-  ) {
+  const tokenRotated =
+    Boolean(session) &&
+    !session?.end_time &&
+    session?.status === "active" &&
+    session?.session_token !== body.sessionToken;
+  if (sessionError || !session || tokenRotated || session.end_time || session.status !== "active") {
     await logSuspicious({
       accessCodeId: body.accessCodeId,
       ip,
@@ -222,7 +228,15 @@ export async function validateSessionRequest(
       ok: false,
       ip,
       userAgent,
-      response: NextResponse.json({ error: "会话无效，请重新开始监督" }, { status: 401 })
+      response: NextResponse.json(
+        tokenRotated
+          ? {
+              error: "当前访问码已在其他使用环境中重新绑定",
+              code: "session_reactivated_elsewhere"
+            }
+          : { error: "会话无效，请重新开始监督", code: "session_invalid" },
+        { status: 401 }
+      )
     };
   }
 

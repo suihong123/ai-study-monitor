@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isAdminRequest } from "@/lib/admin";
+import { getDeviceRebindConfig } from "@/lib/device-rebind-config";
 import { getActiveVisionModelConfig } from "@/lib/model-config";
 import { getTodayKey } from "@/lib/plans";
 import { settleExpiredSessions } from "@/lib/session-settlement";
@@ -28,6 +29,10 @@ export async function GET(request: NextRequest) {
   const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
   const sessionId = request.nextUrl.searchParams.get("sessionId");
   const modelConfig = await getActiveVisionModelConfig();
+  const rebindConfig = await getDeviceRebindConfig();
+  const rebindWindowStart = new Date(
+    Date.now() - rebindConfig.rebindWindowDays * 24 * 60 * 60 * 1000
+  ).toISOString();
 
   const [
     accessCodes,
@@ -40,6 +45,8 @@ export async function GET(request: NextRequest) {
     suspiciousLogs,
     todaySuspiciousLogs,
     adminActions,
+    deviceRebindLogs,
+    recentDeviceRebindSuccesses,
     qwenAllLogs,
     qwenSevenDayLogs
   ] = await Promise.all([
@@ -76,6 +83,19 @@ export async function GET(request: NextRequest) {
       .order("created_at", { ascending: false })
       .limit(200),
     supabaseAdmin
+      .from("device_rebind_logs")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .limit(200),
+    supabaseAdmin
+      .from("device_rebind_logs")
+      .select("access_code_id, created_at")
+      .eq("action_source", "user")
+      .eq("success", true)
+      .eq("result_code", "rebound")
+      .gt("created_at", rebindWindowStart)
+      .order("created_at", { ascending: true }),
+    supabaseAdmin
       .from("ai_call_logs")
       .select("estimated_cost")
       .like("model_type", "vision_qwen%"),
@@ -97,6 +117,8 @@ export async function GET(request: NextRequest) {
     suspiciousLogs,
     todaySuspiciousLogs,
     adminActions,
+    deviceRebindLogs,
+    recentDeviceRebindSuccesses,
     qwenAllLogs,
     qwenSevenDayLogs
   ].find((result) => result.error);
@@ -239,6 +261,52 @@ export async function GET(request: NextRequest) {
         : 0;
   });
 
+  const reactivationStatsByAccessCode = (
+    recentDeviceRebindSuccesses.data ?? []
+  ).reduce<
+    Record<string, { successfulTimes: string[] }>
+  >((acc, row) => {
+    if (!row.access_code_id || !row.created_at) return acc;
+    acc[row.access_code_id] ??= { successfulTimes: [] };
+    acc[row.access_code_id].successfulTimes.push(String(row.created_at));
+    return acc;
+  }, {});
+
+  const reactivationStats = Object.fromEntries(
+    (accessCodes.data ?? []).map((accessCode) => {
+      const successfulTimes =
+        reactivationStatsByAccessCode[accessCode.id]?.successfulTimes ?? [];
+      const firstSuccess = successfulTimes[0]
+        ? new Date(successfulTimes[0]).getTime()
+        : null;
+      const lastSuccess = successfulTimes[successfulTimes.length - 1]
+        ? new Date(successfulTimes[successfulTimes.length - 1]).getTime()
+        : null;
+      const windowLimitAt =
+        successfulTimes.length >= rebindConfig.rebindMaxCount && firstSuccess
+          ? new Date(
+              firstSuccess +
+                rebindConfig.rebindWindowDays * 24 * 60 * 60 * 1000
+            ).toISOString()
+          : null;
+      const intervalLimitAt =
+        lastSuccess &&
+        lastSuccess + rebindConfig.rebindMinIntervalSeconds * 1000 > Date.now()
+          ? new Date(
+              lastSuccess + rebindConfig.rebindMinIntervalSeconds * 1000
+            ).toISOString()
+          : null;
+      return [
+        accessCode.id,
+        {
+          usedCount: successfulTimes.length,
+          maxCount: rebindConfig.rebindMaxCount,
+          nextAvailableAt: windowLimitAt ?? intervalLimitAt
+        }
+      ];
+    })
+  );
+
   let sessionDetail = null;
   if (sessionId) {
     const [session, records, calls, errors] = await Promise.all([
@@ -280,7 +348,10 @@ export async function GET(request: NextRequest) {
     errorLogs: errorLogs.data ?? [],
     suspiciousLogs: suspiciousLogs.data ?? [],
     adminActions: adminActions.data ?? [],
+    deviceRebindLogs: deviceRebindLogs.data ?? [],
     modelConfig,
+    rebindConfig,
+    reactivationStats,
     costByAccessCode: Object.values(costByAccessCode),
     sessionDetail
   });

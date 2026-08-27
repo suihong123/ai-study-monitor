@@ -7,6 +7,12 @@
 3. [迭代与复盘机制](ITERATION_PLAYBOOK.md)：每次优化前如何复盘、沟通、实施和回写。
 4. [复盘记录索引](reviews/README.md)：历次优化的背景、决策和结果。
 5. [优化前复盘模板](reviews/TEMPLATE.md)：新一轮优化的固定开场文档。
+6. [v0.9 隔离数据库验收结果](acceptance/V09_ISOLATED_DATABASE_RESULT.md)：migration 18、19 码快照、事务与并发证据。
+7. [v0.9 真机验收记录](acceptance/V09_MANUAL_DEVICE_REBIND_ACCEPTANCE.md)：手机、平板、微信和系统浏览器的执行表。
+8. [v0.9 托管 Supabase 验收结果](acceptance/V09_HOSTED_SUPABASE_RESULT.md)：托管迁移、RLS、函数授权、并发和回滚证据。
+9. [v0.9 独立测试站点准备](acceptance/V09_STAGING_SETUP.md)：环境隔离、变量分级和负责人接续步骤。
+10. [v0.9 生产只读预检与回退计划](acceptance/V09_PRODUCTION_READ_ONLY_PLAN.md)：只读快照、上线门禁和 v0.8 回退方式。
+11. [v0.9 生产依赖审计](acceptance/V09_DEPENDENCY_AUDIT.md)：2 个 High 的攻击面、修复版本和跨 major 风险判断。
 
 ## 维护原则
 
@@ -17,8 +23,9 @@
 
 ## 当前基线
 
-- 基线日期：2026-07-27
-- 基线版本：1.1
-- 生产代码：`a2bb6a6`
+- 基线日期：2026-08-06
+- 基线版本：1.7
+- 生产代码：`68ed8d4`（v0.9）
 - 生产地址：`www.aistudyguard.top`
+- 开发状态：v0.9 已完成生产迁移、部署和最终真机烟雾验收；v0.9.1 每日只读保活已通过 Preview 验证并获 Production 发布确认
 - 线上经营数据：当前仓库未提供，业务量级仍待补充

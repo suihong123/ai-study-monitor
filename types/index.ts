@@ -47,12 +47,72 @@ export type AccessCode = {
   base_interval_seconds: number;
   min_interval_seconds: number;
   device_id: string | null;
+  last_rebind_at: string | null;
+  rebind_total: number;
+  current_device_name: string | null;
+  current_device_model: string | null;
+  current_device_platform: string | null;
+  device_bound_at: string | null;
+  reactivation_flagged_at: string | null;
+  reactivation_flag_reason: string | null;
   status: AccessCodeStatus;
   freeze_reason: string | null;
   admin_notes: string | null;
   created_at: string;
   updated_at: string | null;
   expires_at: string | null;
+};
+
+export type DevicePlatform = "Android" | "iOS" | "Windows" | "Mac" | "Other";
+
+export type DeviceInfo = {
+  deviceId: string;
+  deviceName: string;
+  deviceModel: string;
+  devicePlatform: DevicePlatform;
+};
+
+export type DeviceRebindConfig = {
+  rebindWindowDays: number;
+  rebindMaxCount: number;
+  rebindMinIntervalSeconds: number;
+  updatedAt: string | null;
+  source: "database" | "default";
+};
+
+export type DeviceRebindRequired = {
+  usedCount: number;
+  maxCount: number;
+  nextCount: number;
+  windowDays: number;
+  minIntervalSeconds: number;
+  allowed: boolean;
+  limitReason: "rate_limited" | "window_limit_reached" | null;
+  nextAvailableAt: string | null;
+};
+
+export type DeviceRebindResult = {
+  success: boolean;
+  resultCode:
+    | "invalid_request"
+    | "access_code_not_found"
+    | "access_code_unavailable"
+    | "first_activated"
+    | "already_active"
+    | "rate_limited"
+    | "window_limit_reached"
+    | "rebound"
+    | "server_error";
+  message: string;
+  usedCount: number;
+  maxCount: number;
+  nextCount: number;
+  windowDays: number;
+  minIntervalSeconds: number;
+  allowed: boolean;
+  limitReason?: "rate_limited" | "window_limit_reached" | string | null;
+  nextAvailableAt?: string | null;
+  replayed?: boolean;
 };
 
 export type PlanConfig = {

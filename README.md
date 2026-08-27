@@ -12,7 +12,7 @@
 - [迭代与优化前复盘机制](docs/ITERATION_PLAYBOOK.md)
 - [历次复盘记录](docs/reviews/README.md)
 
-当前基线日期为 2026-07-27，生产代码为 `a2bb6a6`，已部署至 `www.aistudyguard.top`。代码和部署只能证明产品能力，不能证明用户、收入、转化或留存；这些经营数据目前统一标记为待补充。
+当前基线日期为 2026-08-06，生产代码为 `68ed8d4`（v0.9），已部署并通过生产数据库迁移、真实 Qwen、重新绑定、恢复监督、计时、报告和最终真机烟雾验收。v0.9.1 只新增 Supabase Free Plan 每日只读保活，已通过 Preview 鉴权、真实只读查询和零业务写入验证，并已获 Production 发布确认。代码和部署只能证明产品能力，不能证明用户、收入、转化或留存；这些经营数据目前统一标记为待补充。
 
 ## 已实现范围
 
@@ -23,8 +23,9 @@
 - 离座或无法判断达到条件后播放语音/蜂鸣提醒，并动态调整提醒冷却
 - 结束监督后写入 `sessions`、`records`，扣减访问码时长
 - 所有套餐暂时统一生成基于真实记录统计的基础报告
-- 访问码设备绑定和永久有效的总时长权益
-- `/admin` 后台创建访问码、查看额度、查看使用记录、禁用访问码和解绑设备
+- 访问码单浏览器环境激活和永久有效的总时长权益
+- v0.9 生产版支持任意连续 15 天最多 10 次免费重新激活，两次成功至少间隔 60 秒
+- `/admin` 后台创建访问码、查看额度与记录、调整状态，以及管理使用环境重新激活
 
 ## 套餐
 
@@ -47,13 +48,16 @@
 - `POST /api/analyze`：根据后台配置执行 Mock 或 Qwen 视觉分析
 - `POST /api/report`：根据真实监督记录生成基础报告
 - `GET /api/access-code`：后台查看访问码
-- `POST /api/access-code`：验证、创建、禁用、解绑访问码
+- `POST /api/access-code`：验证、创建、禁用、重置当前激活环境
+- `POST /api/device/rebind`：原子执行使用环境重新激活
 - `PATCH /api/access-code`：结束监督、保存记录、扣减时长
 - `POST /api/access-code/verify`：访问码验证兼容入口
 - `POST /api/session/start`：开始监督兼容入口
 - `POST /api/session/end`：结束监督兼容入口
 - `POST /api/client-error`：记录摄像头权限等前端错误
 - `GET/POST /api/admin/model-config`：后台查看和更新视觉模型配置
+- `GET/POST /api/admin/rebind-config`：后台查看和更新重新激活滚动规则
+- `GET /api/cron/keep-alive`：Vercel Cron 专用 Supabase 只读保活，需 `CRON_SECRET`
 
 ## Supabase 建表
 
@@ -85,7 +89,7 @@
 
 - `error_logs`：错误日志
 - `ai_call_logs`：AI调用日志和成本
-- `suspicious_logs`：可疑访问、限流、多设备和无效访问记录
+- `suspicious_logs`：可疑访问、限流、新使用环境和无效访问记录
 - `sessions.session_token`：本次监督会话令牌
 - `records.current_frequency_seconds`、`triggered_reminder`、`ai_called`、`error_message`：单次识别时间线调试字段
 - `records.confidence`、`reason`、`analyze_mode`、`manual_corrected`、`correction_source`、`corrected_at`：识别质量评估和手动纠错字段
@@ -108,6 +112,20 @@ supabase/migration_2026_17_permanent_entitlements_settlement.sql
 
 该迁移会清空访问码日期有效期、统一基础报告、增加隐私说明确认字段，并建立原子会话结算函数。部署新版应用前必须先执行。
 
+v0.9 生产升级必须在一个显式事务中按顺序执行并核验：
+
+```text
+BEGIN
+→ supabase/migration_2026_18_device_rebind_mvp.sql
+→ supabase/verify_2026_18_device_rebind_mvp.sql（或等价关键结构检查）
+→ supabase/migration_2026_19_supervision_request_isolation.sql
+→ supabase/verify_2026_19_supervision_request_isolation.sql
+→ 权益、会话、记录和报告最终一致性检查
+→ COMMIT
+```
+
+任一迁移或关键核验失败都必须 `ROLLBACK`，不得手工绕过或继续部署。
+
 ## 环境变量
 
 在 Vercel Project Settings 里配置：
@@ -118,6 +136,7 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=你的Supabase anon key
 SUPABASE_URL=你的Supabase项目URL
 SUPABASE_SERVICE_ROLE_KEY=你的Supabase service role key
 ADMIN_PASSWORD=后台管理密码
+CRON_SECRET=Vercel Cron 专用随机密钥
 QWEN_API_KEY=Qwen服务端密钥
 QWEN_API_URL=Qwen接口地址
 QWEN_MODEL=Qwen模型名
@@ -130,9 +149,17 @@ DEEPSEEK_API_KEY=预留的DeepSeek服务端密钥
 - 浏览器不直接读写 Supabase 表。
 - API Routes 使用 `SUPABASE_SERVICE_ROLE_KEY` 写入访问码、会话和记录。
 - `ADMIN_PASSWORD` 用于保护 `/admin` 的接口操作。
+- `CRON_SECRET` 仅用于 Vercel Cron 的 Bearer 鉴权；缺失或不匹配时保活接口返回 401。
 - AI API Key 只能放在服务端环境变量里，不得写入前端代码。
 - `ANALYZE_MODE` 默认为 `mock`；设置为 `qwen` 时尝试调用 Qwen-VL，Qwen 环境变量缺失会自动回退 Mock 并写入错误日志。
 - 后台“视觉模型配置”会优先于 `ANALYZE_MODE`、`QWEN_API_URL`、`QWEN_MODEL` 生效；如果未执行模型配置迁移或未配置后台模型，则自动回退环境变量。
+
+## v0.9.1 Supabase 只读保活
+
+- Vercel 每天 UTC 19:00（北京时间约 03:00）请求一次 `/api/cron/keep-alive`。
+- 接口仅执行 `access_codes.select("id").limit(1)`，不返回查询结果。
+- 接口不写访问码、分钟、会话、识别、AI 日志、报告或任何其他业务数据。
+- Vercel Hobby Cron 可能在指定小时内分散执行；本功能只要求每天一次，不依赖精确分钟。
 
 ## 后台使用
 
@@ -142,7 +169,8 @@ DEEPSEEK_API_KEY=预留的DeepSeek服务端密钥
 - 所有 sessions 列表和单次监督详情
 - 错误日志、AI调用日志、风险记录
 - 按访问码统计的调用次数、预估成本、平均每小时成本、平均每次监督成本、报告成本
-- 访问码禁用、解绑设备、总时长补偿和扣减
+- 访问码禁用、重置当前激活环境、总时长补偿和扣减
+- 使用环境重新激活规则、当前环境、滚动次数、历史和异常标记
 - 视觉模型配置：可在 `qwen3.6-flash` 稳定模型和 `qwen3-vl-flash` 低成本候选之间切换，也可以填写自定义模型名和预估单次识别成本
 
 ## Rate Limit
@@ -163,12 +191,21 @@ MVP 阶段使用内存版限流，后续可替换为 Redis。
 - `/api/analyze`和结束监督接口必须携带 `accessCodeId`、`sessionId`、`sessionToken`
 - 结束监督后 `session_token` 失效
 - 已结束报告使用独立的 `report_token` 只读访问，不能用于调用监督接口
-- 访问码首次使用绑定 `device_id`
-- 换设备使用会提示“该访问码已绑定其他设备，请联系客服解绑。”
+- 访问码首次使用时激活浏览器 `localStorage` 中的匿名 `device_id`；它只代表使用环境，不是物理设备指纹
+- v0.9 检测到新环境时由用户确认重新激活；数据库原子判断滚动次数和最小间隔，并轮换活跃会话令牌
+- 重新激活始终免费，不修改访问码、会话或报告中的监督时长
 - 服务端不采用前端提交的持续时长、AI调用次数、套餐、报告等级和额度字段
 - analyze 和心跳会检查访问码状态、总剩余时长和 session 有效性
 - 会话结束和总时长扣减通过数据库函数原子完成，同一会话重复结算不会重复扣减
-- 多设备尝试、无效访问码、限流、额度不足继续调用、session_token 错误都会记录风险日志
+- 新使用环境尝试、无效访问码、限流、额度不足继续调用、session_token 错误都会记录风险日志
+
+## v0.9 Known Limitation
+
+当真实 Qwen 上游已经开始处理后发生客户端 Abort，目前无法用真机证明上游连接会立即终止。旧环境响应仍受客户端会话隔离和数据库令牌事务门禁保护，不会更新识别记录、提醒、监督状态、报告、计时或套餐权益；极端情况下可能多产生一次模型调用费用。该限制已由项目负责人接受，不作为 v0.9 发布阻断项。
+
+## v0.9 Dependency Risk Acceptance
+
+`npm audit --omit=dev` 对 Next.js 14.2.35 及其内嵌 PostCSS 报告 2 个 High。当前没有官方认可的 Next.js 14 同 major 修复路径，自动修复会跨到 Next.js 16.3.0。项目负责人已于 2026-08-04 接受 v0.9 本次发布风险；该接受不是永久豁免，后续单独进行 Next.js 16 安全升级与完整回归。升级前不使用 `npm audit fix --force`、不对 Next 内嵌 PostCSS 做非官方 override，也不新增 rewrites、middleware、Server Actions 等未评估攻击面。
 
 ## 访问码生命周期
 
@@ -237,6 +274,7 @@ supabase/migration_2026_14_report_access.sql
 npm ci
 npm run typecheck
 npm test
+npm run lint
 npm run build
 ```
 

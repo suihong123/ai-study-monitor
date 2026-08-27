@@ -6,3 +6,6 @@ node_modules
 *.tsbuildinfo
 public/captures/*
 !public/captures/.gitkeep
+.vercel
+.env*
+!.env.example

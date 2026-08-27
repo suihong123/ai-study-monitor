@@ -2,11 +2,16 @@
 
 import { FormEvent, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { getDeviceId } from "@/lib/device";
+import { getDeviceInfo, getDeviceRebindRequestId } from "@/lib/device";
 import { privacyNoticeText, privacyNoticeVersion } from "@/lib/privacy";
 import { loadReportHistory, reportUrl, saveReportHistory, type ReportHistoryEntry } from "@/lib/report-history";
 import { appVersion } from "@/lib/version";
-import type { AccessCode, StudySession } from "@/types";
+import type {
+  AccessCode,
+  DeviceInfo,
+  DeviceRebindRequired,
+  StudySession
+} from "@/types";
 
 type CurrentSupervision = {
   accessCode: AccessCode;
@@ -14,23 +19,82 @@ type CurrentSupervision = {
   totalRemainingMinutes: number;
 };
 
+type PendingDeviceRebind = {
+  deviceInfo: DeviceInfo;
+  details: DeviceRebindRequired;
+  idempotencyKey: string;
+};
+
 export default function HomePage() {
   const router = useRouter();
   const [code, setCode] = useState("");
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
   const [loading, setLoading] = useState(false);
   const [privacyAcknowledged, setPrivacyAcknowledged] = useState(true);
   const [reportHistory, setReportHistory] = useState<ReportHistoryEntry[]>([]);
   const [recoverableSupervision, setRecoverableSupervision] =
     useState<CurrentSupervision | null>(null);
+  const [pendingDeviceRebind, setPendingDeviceRebind] =
+    useState<PendingDeviceRebind | null>(null);
+  const [reactivatedDeviceInfo, setReactivatedDeviceInfo] =
+    useState<DeviceInfo | null>(null);
 
   useEffect(() => {
     setReportHistory(loadReportHistory());
+    const supervisionStopNotice = window.sessionStorage.getItem(
+      "supervision-stop-notice"
+    );
+    if (supervisionStopNotice) {
+      setNotice(supervisionStopNotice);
+      window.sessionStorage.removeItem("supervision-stop-notice");
+    }
   }, []);
 
   function enterSupervision(supervision: CurrentSupervision) {
     window.sessionStorage.setItem("current-supervision", JSON.stringify(supervision));
     router.push("/supervise");
+  }
+
+  async function validateAndEnter(deviceInfo: DeviceInfo) {
+    const response = await fetch("/api/access-code", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "validate",
+        code,
+        ...deviceInfo,
+        privacyAcknowledged,
+        privacyNoticeVersion
+      })
+    });
+    const result = await response.json();
+
+    if (!response.ok) {
+      if (result.code === "rebind_required" && result.rebindRequired) {
+        setPendingDeviceRebind({
+          deviceInfo,
+          details: result.rebindRequired,
+          idempotencyKey: getDeviceRebindRequestId()
+        });
+        return;
+      }
+      setError(result.error ?? "访问码验证失败");
+      return;
+    }
+
+    const supervision = {
+      accessCode: result.accessCode,
+      session: result.session,
+      totalRemainingMinutes: result.totalRemainingMinutes
+    };
+
+    if (result.recoverable) {
+      setRecoverableSupervision(supervision);
+      return;
+    }
+
+    enterSupervision(supervision);
   }
 
   async function start(event: FormEvent<HTMLFormElement>) {
@@ -39,36 +103,61 @@ export default function HomePage() {
     setLoading(true);
 
     try {
-      const response = await fetch("/api/access-code", {
+      await validateAndEnter(getDeviceInfo());
+    } catch {
+      setError("网络异常，请稍后重试");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function confirmDeviceRebind() {
+    if (!pendingDeviceRebind) return;
+    setError("");
+    setLoading(true);
+
+    try {
+      const response = await fetch("/api/device/rebind", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          action: "validate",
           code,
-          deviceId: getDeviceId(),
-          privacyAcknowledged,
-          privacyNoticeVersion
+          ...pendingDeviceRebind.deviceInfo,
+          idempotencyKey: pendingDeviceRebind.idempotencyKey
         })
       });
       const result = await response.json();
 
       if (!response.ok) {
-        setError(result.error ?? "访问码验证失败");
+        if (
+          result.code === "rate_limited" ||
+          result.code === "window_limit_reached"
+        ) {
+          setPendingDeviceRebind((current) =>
+            current
+              ? {
+                  ...current,
+                  details: {
+                    ...current.details,
+                    usedCount:
+                      result.usedCount ?? current.details.usedCount,
+                    nextCount:
+                      result.nextCount ?? current.details.nextCount,
+                    allowed: false,
+                    limitReason: result.code,
+                    nextAvailableAt: result.nextAvailableAt ?? null
+                  }
+                }
+              : current
+          );
+        }
+        setError(result.error ?? "重新绑定失败，请稍后再试");
         return;
       }
 
-      const supervision = {
-        accessCode: result.accessCode,
-        session: result.session,
-        totalRemainingMinutes: result.totalRemainingMinutes
-      };
-
-      if (result.recoverable) {
-        setRecoverableSupervision(supervision);
-        return;
-      }
-
-      enterSupervision(supervision);
+      const deviceInfo = pendingDeviceRebind.deviceInfo;
+      setPendingDeviceRebind(null);
+      setReactivatedDeviceInfo(deviceInfo);
     } catch {
       setError("网络异常，请稍后重试");
     } finally {
@@ -155,6 +244,11 @@ export default function HomePage() {
             required
           />
           {error && <p className="mt-3 text-sm text-alert">{error}</p>}
+          {notice && (
+            <p className="mt-3 rounded-md bg-amber-50 p-3 text-sm leading-6 text-warn">
+              {notice}
+            </p>
+          )}
           <label className="mt-4 flex items-start gap-2 text-sm leading-6 text-muted">
             <input
               type="checkbox"
@@ -172,6 +266,15 @@ export default function HomePage() {
             {loading ? "正在验证" : "开始监督"}
           </button>
         </form>
+
+        <div className="mt-4 rounded-md border border-line bg-white p-4 text-sm leading-6 text-muted">
+          <p className="font-medium text-ink">
+            访问码15天内最多可免费重新绑定10次。
+          </p>
+          <p className="mt-1">
+            更换手机、平板，或切换微信浏览器和系统浏览器时，可能需要重新绑定。
+          </p>
+        </div>
 
         {reportHistory.length > 0 && (
           <section className="mt-4 rounded-md border border-line bg-white p-4">
@@ -252,6 +355,106 @@ export default function HomePage() {
           </div>
         </div>
       )}
+
+      {pendingDeviceRebind && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-md rounded-md bg-white p-5 shadow-lg">
+            <h2 className="text-xl font-semibold">检测到新的使用环境</h2>
+            {!pendingDeviceRebind.details.allowed ? (
+              <>
+                {pendingDeviceRebind.details.limitReason ===
+                "window_limit_reached" ? (
+                  <div className="mt-3 rounded-md bg-amber-50 p-3 text-sm leading-6 text-ink">
+                    最近{pendingDeviceRebind.details.windowDays}
+                    天内重新绑定次数已达到
+                    {pendingDeviceRebind.details.maxCount}次。
+                    <br />
+                    下一次可重新绑定时间：
+                    <br />
+                    {formatDateTime(pendingDeviceRebind.details.nextAvailableAt)}
+                    <br />
+                    如需立即处理，请联系管理员。
+                  </div>
+                ) : (
+                  <div className="mt-3 rounded-md bg-amber-50 p-3 text-sm leading-6 text-ink">
+                    操作过于频繁，请稍后再试。
+                    <br />
+                    可再次尝试时间：
+                    {formatDateTime(pendingDeviceRebind.details.nextAvailableAt)}
+                  </div>
+                )}
+              </>
+            ) : (
+              <>
+                <p className="mt-3 text-sm font-medium leading-6 text-ink">
+                  访问码15天内最多可免费重新绑定10次。
+                </p>
+                <p className="mt-3 text-sm leading-6 text-muted">
+                  当前访问码已在其他浏览器或设备环境中激活。
+                  更换手机、平板，或切换微信浏览器和系统浏览器时，可能需要重新绑定。
+                  是否将访问码重新绑定到当前环境？
+                </p>
+                <div className="mt-3 rounded-md bg-emerald-50 p-3 text-sm leading-6 text-ink">
+                  最近{pendingDeviceRebind.details.windowDays}天已重新绑定{" "}
+                  {pendingDeviceRebind.details.usedCount}/
+                  {pendingDeviceRebind.details.maxCount} 次。
+                  <br />
+                  本次确认后将变为 {pendingDeviceRebind.details.nextCount}/
+                  {pendingDeviceRebind.details.maxCount} 次。
+                </div>
+              </>
+            )}
+            {error && <p className="mt-3 text-sm text-alert">{error}</p>}
+            <div className="mt-5 flex flex-col gap-2 sm:flex-row">
+              <button
+                type="button"
+                disabled={loading}
+                onClick={() => {
+                  setPendingDeviceRebind(null);
+                  setError("");
+                }}
+                className="h-11 rounded-md border border-line px-4 font-medium disabled:opacity-60"
+              >
+                {pendingDeviceRebind.details.allowed ? "取消" : "知道了"}
+              </button>
+              {pendingDeviceRebind.details.allowed && (
+                <button
+                  type="button"
+                  disabled={loading}
+                  onClick={() => void confirmDeviceRebind()}
+                  className="h-11 rounded-md bg-brand px-4 font-semibold text-white disabled:opacity-60"
+                >
+                  {loading ? "正在重新绑定" : "确认重新绑定"}
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {reactivatedDeviceInfo && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-md rounded-md bg-white p-5 shadow-lg">
+            <h2 className="text-xl font-semibold">重新绑定成功</h2>
+            <p className="mt-3 text-sm leading-6 text-muted">
+              访问码已切换到当前使用环境，原使用环境将无法继续监督。
+            </p>
+            <button
+              type="button"
+              disabled={loading}
+              onClick={() => {
+                const deviceInfo = reactivatedDeviceInfo;
+                setReactivatedDeviceInfo(null);
+                setLoading(true);
+                void validateAndEnter(deviceInfo).finally(() => setLoading(false));
+              }}
+              className="mt-5 h-11 w-full rounded-md bg-brand px-4 font-semibold text-white disabled:opacity-60"
+            >
+              {loading ? "正在进入" : "继续监督"}
+            </button>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
@@ -262,5 +465,17 @@ function formatReportDate(value: string) {
     day: "2-digit",
     hour: "2-digit",
     minute: "2-digit"
+  });
+}
+
+function formatDateTime(value: string | null) {
+  if (!value) return "请稍后再试";
+  return new Date(value).toLocaleString("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false
   });
 }
